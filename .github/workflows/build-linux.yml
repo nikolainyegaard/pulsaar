@@ -1,0 +1,22 @@
+name: Build Linux
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Rust core
+        run: cd core && cargo build --release
+
+      # TODO: build GTK4 app
+      # TODO: package as .AppImage and .deb
+      # TODO: upload artifact

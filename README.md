@@ -1,68 +1,30 @@
-# <img src="https://pwr-solaar.github.io/Solaar/img/solaar.svg" width="60px"/> Solaar
+# Pulsaar
 
-Solaar is a Linux manager for many Logitech keyboards, mice, and other devices
-that connect wirelessly to a Unifying, Bolt, Lightspeed or Nano receiver
-as well as many Logitech devices that connect via a USB cable or Bluetooth.
-Solaar is not a device driver and responds only to special messages from devices
-that are otherwise ignored by the Linux input system.
+A native desktop app for managing Logitech Unifying and Bolt wireless receivers. Pair and unpair devices, check battery status, and view device info -- no account required, no telemetry.
 
-<a href="https://pwr-solaar.github.io/Solaar/index">More Information</a> -
-<a href="https://pwr-solaar.github.io/Solaar/usage">Usage</a> -
-<a href="https://pwr-solaar.github.io/Solaar/capabilities">Capabilities</a> -
-<a href="https://pwr-solaar.github.io/Solaar/rules">Rules</a> -
-<a href="https://pwr-solaar.github.io/Solaar/installation">Manual Installation</a> -
-<a href="https://pwr-solaar.github.io/Solaar/issues">Known Issues</a>
+Pulsaar runs natively on macOS (SwiftUI), Windows (WinUI 3), and Linux (GTK4), with a shared Rust core handling the HID++ protocol.
 
+## Status
 
-[![codecov](https://codecov.io/gh/pwr-Solaar/Solaar/graph/badge.svg?token=D7YWFEWID6)](https://codecov.io/gh/pwr-Solaar/Solaar)
-[![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2+-blue.svg)](../LICENSE.txt)
+Early development. Not yet functional.
 
-<p align="center">
-<img src="https://pwr-solaar.github.io/Solaar/screenshots/Solaar-main-window-multiple.png" width="54%"/>
-  &#160;
-<img src="https://pwr-solaar.github.io/Solaar/screenshots/Solaar-main-window-receiver.png" width="43%"/>
-</p>
+## Architecture
 
-<p align="center">
-<img src="https://pwr-solaar.github.io/Solaar/screenshots/Solaar-main-window-back-divert.png" width="49%"/>
-  &#160;
-<img src="https://pwr-solaar.github.io/Solaar/screenshots/Solaar-rule-editor.png" width="48%"/>
-</p>
+A shared Rust library (`core/`) implements the HID++ protocol and exposes a C-compatible FFI. Each platform has its own native UI that calls into this core:
 
-Solaar supports:
-- pairing/unpairing of devices with receivers
-- configuring device settings
-- custom button configuration
-- running rules in response to special messages from devices
+- `core/` - Rust library (HID++ 1.0 and 2.0, device descriptors, receiver logic)
+- `macos/` - SwiftUI app
+- `windows/` - WinUI 3 app (C#)
+- `linux/` - GTK4 app
 
-For more information see
-    <a href="https://pwr-solaar.github.io/Solaar/index">the main Solaar documentation page.</a> -
+## Building
 
+See the platform-specific instructions in each subdirectory. The Rust core must be built first.
 
-## Installation Packages
+```
+cd core && cargo build
+```
 
-Up-to-date prebuilt packages are available for some Linux distros
-(e.g., Fedora) in their standard repositories.
-If a recent version of Solaar is not
-available from the standard repositories for your distribution, you can try
-one of these packages:
+## Relationship to Solaar
 
-- Arch solaar package in the [extra repository][arch]
-- Ubuntu/Kubuntu package in [Solaar stable ppa][ppa stable]
-- NixOS Flake package in [Svenum/Solaar-Flake][nix flake]
-
-Solaar is available from some other repositories
-but may be several versions behind the current version:
-
-- a [Debian package][debian], courtesy of Stephen Kitt
-- a Ubuntu package is available from [universe repository][ubuntu universe repository]
-- a [Gentoo package][gentoo], courtesy of Carlos Silva and Tim Harder
-- a [Mageia package][mageia], courtesy of David Geiger
-
-[ppa stable]: https://launchpad.net/~solaar-unifying/+archive/ubuntu/stable
-[arch]: https://www.archlinux.org/packages/extra/any/solaar/
-[gentoo]: https://packages.gentoo.org/packages/app-misc/solaar
-[mageia]: http://mageia.madb.org/package/show/release/cauldron/application/0/name/solaar
-[ubuntu universe repository]: http://packages.ubuntu.com/search?keywords=solaar&searchon=names&suite=all&section=all
-[nix flake]: https://github.com/Svenum/Solaar-Flake
-[debian]: https://packages.debian.org/search?keywords=solaar&searchon=names&suite=all&section=all
+Pulsaar is not a fork of Solaar. It reimplements the HID++ protocol from scratch in Rust, using Solaar's source as a protocol reference. The `reference/` directory contains a snapshot of Solaar used during development.

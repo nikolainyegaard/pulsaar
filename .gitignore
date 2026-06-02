@@ -1,34 +1,24 @@
-*.pyc
-*.pyo
-__pycache__/
-*.log
-*.mo
+# Rust
+target/
+Cargo.lock
 
-/lib/Solaar.egg-info/
-/lib/solaar.egg-info/
-/lib/solaar/commit
-/build/
-/sdist/
-/dist/
-/deb_dist/
-/MANIFEST
+# macOS
+macos/Pulsaar.xcodeproj/project.xcworkspace/xcuserdata/
+macos/Pulsaar.xcodeproj/xcuserdata/
+macos/build/
+*.dSYM
 
-.coverage
-/htmlcov/
+# Windows
+windows/*/bin/
+windows/*/obj/
+windows/*.user
+*.suo
 
-/docs/captures/
-/share/logitech_icons/
-/share/locale/
+# Linux
+linux/build/
 
-/po/*.po~
-
-/.idea/
-
+# General
 .DS_Store
 ._*
-
-Pipfile
-Pipfile.lock
-
-./claude
-CLAUDE.md
+*.log
+/.idea/
