@@ -187,6 +187,53 @@ pub fn get_battery_status(
     Ok(Some(Battery { level, status, voltage: None }))
 }
 
+/// Get battery status using FEAT_UNIFIED_BATTERY (0x1004).
+/// Function 1: GetStatus -> [soc_0-100, level, charging_status, ...].
+/// level: 0=empty, 1=critical, 2=low, 4=good, 8=full (bitmask approximation).
+/// Prefers the SOC percentage; falls back to the level approximation when SOC is 0.
+pub fn get_unified_battery(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+) -> Result<Option<Battery>> {
+    let idx = match features.get(&FEAT_UNIFIED_BATTERY) {
+        Some(&i) => i,
+        None => return Ok(None),
+    };
+
+    let reply = feature_call(transport, device, idx, 1, &[])?;
+    let p = reply.params();
+    if p.is_empty() {
+        return Ok(None);
+    }
+
+    let level = if p[0] > 0 {
+        Some(p[0]) // SOC percentage
+    } else {
+        // No SOC reported; derive approximate level from the level nibble.
+        Some(match p.get(1).copied().unwrap_or(0) {
+            8 => 90u8, // full
+            4 => 50u8, // good
+            2 => 20u8, // low
+            1 => 5u8,  // critical
+            _ => 0u8,  // empty
+        })
+    };
+
+    let status = p.get(2).map(|&b| match b {
+        0 => BatteryStatus::Discharging,
+        1 => BatteryStatus::Recharging,
+        2 => BatteryStatus::AlmostFull,
+        3 => BatteryStatus::Full,
+        4 => BatteryStatus::SlowRecharge,
+        5 => BatteryStatus::InvalidBattery,
+        6 => BatteryStatus::ThermalError,
+        _ => BatteryStatus::Discharging,
+    });
+
+    Ok(Some(Battery { level, status, voltage: None }))
+}
+
 /// Get battery voltage using FEAT_BATTERY_VOLTAGE (0x1001).
 /// Function 0: GetBatteryVoltage -> [voltage_hi, voltage_lo, ...] in mV.
 pub fn get_battery_voltage(

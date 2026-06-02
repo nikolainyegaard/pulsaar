@@ -66,9 +66,14 @@ pub struct Receiver {
 }
 
 /// Enumerate all Logitech receivers attached to the machine.
+///
+/// Filters to usage_page=0xFF00, usage=0x0001 (the HID++ vendor interface) to
+/// get exactly one entry per physical receiver and avoid the HID interfaces
+/// that require input-monitoring permissions on macOS.
 pub fn enumerate_receivers(api: &HidApi) -> Vec<ReceiverHandle> {
     api.device_list()
         .filter(|d| d.vendor_id() == LOGITECH_VID)
+        .filter(|d| d.usage_page() == 0xFF00 && d.usage() == 0x0001)
         .filter_map(|d| {
             let pid = d.product_id();
             RECEIVERS.iter().find(|&&(p, _, _)| p == pid).map(|&(_, kind, name)| {
@@ -84,10 +89,17 @@ impl Receiver {
     pub fn open(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
         let transport = Transport::open(api, &handle.path)?;
 
-        // Read serial and max_devices from the receiver.
-        let (serial, max_devices) = hidpp10::get_receiver_info(&transport).unwrap_or_else(|_| {
-            (String::from("unknown"), 1)
-        });
+        // Bolt uses a different register for serial and does not support the standard
+        // RECEIVER_INFO sub-register 0x03 that Unifying/Nano/LightSpeed use.
+        let (serial, max_devices) = if handle.kind == ReceiverKind::Bolt {
+            let serial = hidpp10::get_bolt_serial(&transport)
+                .unwrap_or_else(|_| String::from("unknown"));
+            (serial, 6u8) // Bolt supports up to 6 paired devices
+        } else {
+            hidpp10::get_receiver_info(&transport).unwrap_or_else(|_| {
+                (String::from("unknown"), 1)
+            })
+        };
 
         Ok(Self {
             transport,
@@ -107,27 +119,37 @@ impl Receiver {
         let mut devices = Vec::new();
 
         for slot in 1..=self.max_devices {
-            let pairing = match hidpp10::get_pairing_info(&self.transport, slot)? {
-                Some(p) => p,
-                None => continue, // slot is empty
+            // Bolt uses different pairing sub-registers and embeds serial in the pairing response.
+            let (wpid, kind, serial, name) = if self.kind == ReceiverKind::Bolt {
+                let bolt = match hidpp10::get_bolt_pairing_info(&self.transport, slot)? {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let name = hidpp10::get_bolt_device_codename(&self.transport, slot)?
+                    .unwrap_or_else(|| format!("Device {}", slot));
+                (bolt.wpid, bolt.kind, bytes_to_hex(&bolt.serial), name)
+            } else {
+                let pairing = match hidpp10::get_pairing_info(&self.transport, slot)? {
+                    Some(p) => p,
+                    None => continue,
+                };
+                let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)?
+                    .map(|s| bytes_to_hex(&s))
+                    .unwrap_or_default();
+                let name = hidpp10::get_device_codename(&self.transport, slot)?
+                    .unwrap_or_else(|| format!("Device {}", slot));
+                (pairing.wpid, pairing.kind, serial, name)
             };
 
-            let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)?
-                .map(|s| bytes_to_hex(&s))
-                .unwrap_or_default();
-
-            let name = hidpp10::get_device_codename(&self.transport, slot)?
-                .unwrap_or_else(|| format!("Device {}", slot));
-
             // Try HID++ 2.0 battery and name first; fall back to HID++ 1.0.
-            let (battery, firmware) = self.read_device_info(slot, &pairing.kind);
+            let (battery, firmware) = self.read_device_info(slot, &kind);
 
             devices.push(DeviceInfo {
                 slot,
                 name,
-                kind: pairing.kind,
+                kind,
                 serial,
-                wpid: pairing.wpid,
+                wpid,
                 battery,
                 firmware,
             });
@@ -141,9 +163,14 @@ impl Receiver {
         // Probe for HID++ 2.0 support.
         match hidpp20::discover_features(&self.transport, slot) {
             Ok(features) if !features.is_empty() => {
-                let battery = hidpp20::get_battery_status(&self.transport, slot, &features)
+                let battery = hidpp20::get_unified_battery(&self.transport, slot, &features)
                     .ok()
                     .flatten()
+                    .or_else(|| {
+                        hidpp20::get_battery_status(&self.transport, slot, &features)
+                            .ok()
+                            .flatten()
+                    })
                     .or_else(|| {
                         hidpp20::get_battery_voltage(&self.transport, slot, &features)
                             .ok()

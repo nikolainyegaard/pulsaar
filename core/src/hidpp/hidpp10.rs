@@ -107,7 +107,7 @@ pub fn get_receiver_info(transport: &Transport) -> Result<(String, u8)> {
 pub fn get_pairing_info(transport: &Transport, slot: u8) -> Result<Option<PairingInfo>> {
     let sub_reg = InfoSubReg::PairingInformation as u8 + slot - 1;
     match read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg) {
-        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice)) => return Ok(None),
+        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::InvalidValue)) => return Ok(None),
         Err(e) => return Err(e),
         Ok(msg) => {
             let p = msg.params();
@@ -130,7 +130,7 @@ pub fn get_pairing_info(transport: &Transport, slot: u8) -> Result<Option<Pairin
 pub fn get_extended_pairing_info(transport: &Transport, slot: u8) -> Result<Option<[u8; 4]>> {
     let sub_reg = InfoSubReg::ExtendedPairingInfo as u8 + slot - 1;
     match read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg) {
-        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice)) => return Ok(None),
+        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::InvalidValue)) => return Ok(None),
         Err(e) => return Err(e),
         Ok(msg) => {
             let p = msg.params();
@@ -151,18 +151,15 @@ pub fn get_extended_pairing_info(transport: &Transport, slot: u8) -> Result<Opti
 pub fn get_device_codename(transport: &Transport, slot: u8) -> Result<Option<String>> {
     let sub_reg = InfoSubReg::DeviceName as u8 + slot - 1;
     match read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg) {
-        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice)) => return Ok(None),
+        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::InvalidValue)) => return Ok(None),
         Err(e) => return Err(e),
         Ok(msg) => {
             let p = msg.params();
             if p.len() < 2 {
-                return Err(Error::InvalidResponse);
+                return Ok(None);
             }
             let name_len = p[1] as usize;
-            let end = 2 + name_len;
-            if p.len() < end {
-                return Err(Error::InvalidResponse);
-            }
+            let end = (2 + name_len).min(p.len());
             let name = String::from_utf8_lossy(&p[2..end]).into_owned();
             Ok(Some(name))
         }
@@ -271,6 +268,75 @@ pub fn get_firmware(transport: &Transport, device: u8) -> Result<Vec<FirmwareInf
     Ok(result)
 }
 
+// -- Bolt-specific receiver queries -------------------------------------------
+
+/// Read the Bolt receiver unique ID from Register::BoltUniqueId (0x2FB).
+/// Returns the raw params as a hex string (used as the serial number).
+pub fn get_bolt_serial(transport: &Transport) -> Result<String> {
+    let msg = read_long(transport, RECEIVER_DEVICE, Register::BoltUniqueId, 0)?;
+    Ok(bytes_to_hex(msg.params()))
+}
+
+/// Read Bolt pairing info for a given slot (1-based).
+///
+/// Bolt uses sub-register 0x50+slot (1-based index) instead of the Unifying
+/// 0x20+slot-1. The serial number is embedded in the pairing response.
+///
+/// Reply params layout:
+///   [0]    = sub-register echo
+///   [1]    = device kind (low nibble)
+///   [2]    = WPID low byte
+///   [3]    = WPID high byte
+///   [4..8] = serial (4 bytes)
+pub fn get_bolt_pairing_info(transport: &Transport, slot: u8) -> Result<Option<BoltPairingInfo>> {
+    let sub_reg = InfoSubReg::BoltPairingInformation as u8 + slot;
+    match read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg) {
+        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::UnsupportedParam)) => Ok(None),
+        Err(e) => Err(e),
+        Ok(msg) => {
+            let p = msg.params();
+            // Treat short/unexpected replies as empty slot rather than hard errors.
+            if p.len() < 8 {
+                return Ok(None);
+            }
+            // Bolt stores WPID bytes reversed relative to Unifying: high at [3], low at [2].
+            let wpid = [p[3], p[2]];
+            let kind = DeviceKind::from_byte(p[1] & 0x0F);
+            let serial = [p[4], p[5], p[6], p[7]];
+            Ok(Some(BoltPairingInfo { wpid, kind, serial }))
+        }
+    }
+}
+
+/// Read the device name for a Bolt paired device (1-based slot).
+///
+/// Bolt device name uses sub-register 0x60+slot with an extra param 0x01.
+///
+/// Reply params layout:
+///   [0]        = sub-register echo
+///   [1]        = unused
+///   [2]        = name length
+///   [3..3+len] = ASCII name (up to 14 chars)
+pub fn get_bolt_device_codename(transport: &Transport, slot: u8) -> Result<Option<String>> {
+    let sub_reg = InfoSubReg::BoltDeviceName as u8 + slot;
+    let (sub_id, address) = read_ids(Register::ReceiverInfo as u16);
+    let req = Message::short(RECEIVER_DEVICE, sub_id, address, sub_reg, 0x01, 0);
+    match transport.request(&req) {
+        Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::UnsupportedParam)) => Ok(None),
+        Err(e) => Err(e),
+        Ok(msg) => {
+            let p = msg.params();
+            if p.len() < 3 {
+                return Ok(None);
+            }
+            let name_len = (p[2] as usize).min(14);
+            let end = (3 + name_len).min(p.len());
+            let name = String::from_utf8_lossy(&p[3..end]).into_owned();
+            Ok(Some(name))
+        }
+    }
+}
+
 // -- Helpers ------------------------------------------------------------------
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -283,4 +349,12 @@ pub struct PairingInfo {
     pub wpid: [u8; 2],
     pub kind: DeviceKind,
     pub polling_rate_ms: u8,
+}
+
+/// Pairing info for a Bolt device slot (serial embedded in the pairing response).
+#[derive(Debug, Clone)]
+pub struct BoltPairingInfo {
+    pub wpid: [u8; 2],
+    pub kind: DeviceKind,
+    pub serial: [u8; 4],
 }
