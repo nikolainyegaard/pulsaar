@@ -39,6 +39,15 @@ enum ReceiverKind {
         case .lightSpeed: return "LightSpeed"
         }
     }
+
+    var systemImage: String {
+        switch self {
+        case .unifying: return "sun.max.fill"
+        case .bolt: return "bolt.circle.fill"
+        case .lightSpeed: return "wifi.circle.fill"
+        default: return "antenna.radiowaves.left.and.right"
+        }
+    }
 }
 
 enum DeviceKind {

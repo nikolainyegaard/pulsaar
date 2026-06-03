@@ -40,10 +40,10 @@ struct ContentView: View {
                         .tag(SidebarItem.receiver(receiver.id))
 
                     // Devices indented beneath their receiver.
-                    ForEach(receiver.devices) { device in
-                        DeviceSidebarRow(device: device)
+                    ForEach(Array(receiver.devices.enumerated()), id: \.element.id) { index, device in
+                        DeviceSidebarRow(device: device, isLast: index == receiver.devices.count - 1)
                             .tag(SidebarItem.device(device.id))
-                            .listRowInsets(EdgeInsets(top: 3, leading: 44, bottom: 3, trailing: 8))
+                            .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
                     }
                 }
             }
@@ -97,18 +97,44 @@ struct ReceiverSidebarRow: View {
             Text(receiver.name)
                 .fontWeight(.medium)
         } icon: {
-            Image(systemName: "antenna.radiowaves.left.and.right")
+            Image(systemName: receiver.kind.systemImage)
         }
     }
 }
 
 // MARK: - Device sidebar row
 
-struct DeviceSidebarRow: View {
-    let device: DeviceModel
+struct TreeConnector: View {
+    let isLast: Bool
 
     var body: some View {
-        HStack {
+        Canvas { context, size in
+            let midX = size.width / 2
+            let midY = size.height / 2
+            let style = StrokeStyle(lineWidth: 1, lineCap: .round, dash: [2, 3])
+
+            var vert = Path()
+            vert.move(to: CGPoint(x: midX, y: 0))
+            vert.addLine(to: CGPoint(x: midX, y: isLast ? midY : size.height))
+            context.stroke(vert, with: .foreground, style: style)
+
+            var horiz = Path()
+            horiz.move(to: CGPoint(x: midX, y: midY))
+            horiz.addLine(to: CGPoint(x: size.width, y: midY))
+            context.stroke(horiz, with: .foreground, style: style)
+        }
+        .foregroundStyle(.tertiary)
+    }
+}
+
+struct DeviceSidebarRow: View {
+    let device: DeviceModel
+    let isLast: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            TreeConnector(isLast: isLast)
+                .frame(width: 28)
             Label {
                 Text(device.name)
             } icon: {
