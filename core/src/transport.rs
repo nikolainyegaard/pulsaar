@@ -37,6 +37,13 @@ impl Transport {
         Ok(())
     }
 
+    /// Read one unsolicited notification with a timeout. Returns None on timeout.
+    /// Used during pairing to receive device discovery and connection events from
+    /// the receiver without an associated request.
+    pub fn read_notification(&self, timeout_ms: i32) -> Result<Option<Message>> {
+        self.read_one(timeout_ms)
+    }
+
     /// Send a request and wait for a matching reply.
     ///
     /// HID++ 1.0 error responses have sub_id 0x8F, then [req_sub_id, req_address, error_code].

@@ -78,6 +78,13 @@ pub fn write_short(transport: &Transport, device: u8, reg: Register, p0: u8, p1:
     transport.request(&req)
 }
 
+/// Write a long register (0x200-0x2FF). params is up to 16 bytes.
+pub fn write_long(transport: &Transport, device: u8, reg: Register, params: &[u8]) -> Result<Message> {
+    let (sub_id, address) = write_ids(reg as u16);
+    let req = Message::long(device, sub_id, address, params);
+    transport.request(&req)
+}
+
 // -- Receiver queries ---------------------------------------------------------
 
 /// Read receiver serial and max supported devices from RECEIVER_INFO sub-reg 0x03.
@@ -335,6 +342,103 @@ pub fn get_bolt_device_codename(transport: &Transport, slot: u8) -> Result<Optio
             Ok(Some(name))
         }
     }
+}
+
+// -- Notification flags -------------------------------------------------------
+
+/// WIRELESS (0x0100): receiver notifies when a device wireless link changes.
+pub const NOTIF_WIRELESS: u32 = 0x0000_0100;
+/// SOFTWARE_PRESENT (0x0800): signals that software is actively managing the receiver.
+pub const NOTIF_SOFTWARE_PRESENT: u32 = 0x0000_0800;
+
+/// Read the current notification flags from the receiver (register 0x00).
+/// Returns the flags as a 24-bit value (3 bytes, big-endian).
+pub fn get_notification_flags(transport: &Transport) -> Result<u32> {
+    let msg = read_short(transport, RECEIVER_DEVICE, Register::Notifications, 0)?;
+    let p = msg.params();
+    let flags = ((p.first().copied().unwrap_or(0) as u32) << 16)
+        | ((p.get(1).copied().unwrap_or(0) as u32) << 8)
+        | (p.get(2).copied().unwrap_or(0) as u32);
+    Ok(flags)
+}
+
+/// Write the notification flags to the receiver (register 0x00).
+pub fn set_notification_flags(transport: &Transport, flags: u32) -> Result<()> {
+    write_short(
+        transport,
+        RECEIVER_DEVICE,
+        Register::Notifications,
+        ((flags >> 16) & 0xFF) as u8,
+        ((flags >> 8)  & 0xFF) as u8,
+        (flags         & 0xFF) as u8,
+    )?;
+    Ok(())
+}
+
+// -- Unpairing ----------------------------------------------------------------
+
+/// Unpair a device from a Unifying, Nano, or LightSpeed receiver.
+/// slot: 1-based device slot (1..=max_devices).
+/// Writes register 0xB2 (RECEIVER_PAIRING) with action=0x03.
+pub fn unpair_device(transport: &Transport, slot: u8) -> Result<()> {
+    write_short(transport, RECEIVER_DEVICE, Register::ReceiverPairing, 0x03, slot, 0x00)?;
+    Ok(())
+}
+
+/// Unpair a device from a Bolt receiver.
+/// slot: 1-based device slot (1..=max_devices).
+/// Writes long register 0x2C1 (BOLT_PAIRING) with action=0x03.
+pub fn bolt_unpair_device(transport: &Transport, slot: u8) -> Result<()> {
+    let mut params = [0u8; 16];
+    params[0] = 0x03; // action: unpair
+    params[1] = slot;
+    write_long(transport, RECEIVER_DEVICE, Register::BoltPairing, &params)?;
+    Ok(())
+}
+
+// -- Pairing ------------------------------------------------------------------
+
+/// Open or close the pairing lock on a Unifying, Nano, or LightSpeed receiver.
+/// open=true: action=0x01 (open). open=false: action=0x02 (close).
+/// timeout_secs is only meaningful when opening (0-255).
+/// Writes register 0xB2 (RECEIVER_PAIRING).
+pub fn set_pairing_lock(transport: &Transport, open: bool, timeout_secs: u8) -> Result<()> {
+    let action = if open { 0x01 } else { 0x02 };
+    write_short(transport, RECEIVER_DEVICE, Register::ReceiverPairing, action, 0x00, timeout_secs)?;
+    Ok(())
+}
+
+/// Start or cancel device discovery on a Bolt receiver.
+/// cancel=false: start discovery with action=0x01. cancel=true: stop with action=0x02.
+/// timeout_secs is only meaningful when starting (0-255).
+/// Writes short register 0xC0 (BOLT_DEVICE_DISCOVERY): p0=timeout, p1=action.
+pub fn bolt_start_discovery(transport: &Transport, cancel: bool, timeout_secs: u8) -> Result<()> {
+    let action = if cancel { 0x02 } else { 0x01 };
+    write_short(transport, RECEIVER_DEVICE, Register::BoltDeviceDiscovery, timeout_secs, action, 0x00)?;
+    Ok(())
+}
+
+/// Initiate pairing with a discovered Bolt device.
+/// slot: target pairing slot (0 lets the receiver choose; Solaar passes 0 by default).
+/// address: 6-byte Bluetooth device address.
+/// authentication: authentication flags from the discovery notification.
+/// entropy: 20 for keyboards (numeric passkey), 10 for other devices (button passkey).
+/// Writes long register 0x2C1 (BOLT_PAIRING) with action=0x01.
+pub fn bolt_pair_device(
+    transport:      &Transport,
+    slot:           u8,
+    address:        &[u8; 6],
+    authentication: u8,
+    entropy:        u8,
+) -> Result<()> {
+    let mut params = [0u8; 16];
+    params[0] = 0x01; // action: pair
+    params[1] = slot;
+    params[2..8].copy_from_slice(address);
+    params[8] = authentication;
+    params[9] = entropy;
+    write_long(transport, RECEIVER_DEVICE, Register::BoltPairing, &params)?;
+    Ok(())
 }
 
 // -- Helpers ------------------------------------------------------------------

@@ -69,6 +69,29 @@ typedef struct {
 } CDeviceInfo;
 
 // ---------------------------------------------------------------------------
+// Pairing types
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    PulsaarPairingStateWaiting        = 0, // lock open, waiting for a device
+    PulsaarPairingStateDeviceFound    = 1, // Bolt: device found, pairing initiated
+    PulsaarPairingStatePasskeyNumeric = 2, // Bolt: type passkey digits on keyboard then press Enter
+    PulsaarPairingStatePasskeyButton  = 3, // Bolt: press L/R buttons per passkey string, then both
+    PulsaarPairingStatePaired         = 4, // pairing complete; device_name[0] = slot (1-based)
+    PulsaarPairingStateFailed         = 5, // pairing failed; see error field
+    PulsaarPairingStateIdle           = 6, // no pairing in progress
+} PulsaarPairingState;
+
+// Result of one pulsaar_poll_pairing call.
+typedef struct {
+    PulsaarPairingState state;
+    uint8_t device_name[64]; // null-terminated; valid for DeviceFound and Paired
+                             // Paired: device_name[0] = 1-based slot of new device
+    uint8_t passkey[16];     // null-terminated; valid for PasskeyNumeric and PasskeyButton
+    uint8_t error[64];       // null-terminated; valid for Failed
+} CPairingStatus;
+
+// ---------------------------------------------------------------------------
 // Opaque context types (heap-allocated Rust structs; never inspected in Swift)
 // ---------------------------------------------------------------------------
 
@@ -82,6 +105,11 @@ struct PulsaarReceiverContext;
 // Initialize HID and enumerate receivers. Returns null on failure.
 // The caller must eventually call pulsaar_destroy.
 struct PulsaarContext *pulsaar_init(void);
+
+// Re-scan the HID device tree and update the receiver list in place.
+// Call this after plugging or unplugging a receiver, before querying receiver count/info.
+// Any previously opened PulsaarReceiverContext pointers remain valid.
+PulsaarStatus pulsaar_refresh_receivers(struct PulsaarContext *ctx);
 
 // Free the session context. Safe to call with null.
 void pulsaar_destroy(struct PulsaarContext *ctx);
@@ -110,3 +138,20 @@ size_t pulsaar_get_device_count(const struct PulsaarReceiverContext *rctx);
 
 // Fill out with info for the device at index in the cached device list.
 PulsaarStatus pulsaar_get_device_info(const struct PulsaarReceiverContext *rctx, size_t index, CDeviceInfo *out);
+
+// Unpair the device in slot from the opened receiver.
+// slot: 1-based device slot number (from CDeviceInfo.slot).
+PulsaarStatus pulsaar_unpair_device(struct PulsaarReceiverContext *rctx, uint8_t slot);
+
+// Open the pairing lock (Unifying) or start device discovery (Bolt).
+// timeout_secs: how long the receiver waits for a device (1-255).
+// Call pulsaar_poll_pairing in a loop after this returns Ok.
+PulsaarStatus pulsaar_start_pairing(struct PulsaarReceiverContext *rctx, uint8_t timeout_secs);
+
+// Poll for one pairing event. Blocks for at most timeout_ms milliseconds.
+// Call in a loop after pulsaar_start_pairing until out.state is Paired or Failed.
+PulsaarStatus pulsaar_poll_pairing(struct PulsaarReceiverContext *rctx, uint32_t timeout_ms, CPairingStatus *out);
+
+// Cancel an in-progress pairing. Closes the lock / stops discovery.
+// Safe to call even if pairing is not in progress.
+PulsaarStatus pulsaar_cancel_pairing(struct PulsaarReceiverContext *rctx);

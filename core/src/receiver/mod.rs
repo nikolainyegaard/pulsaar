@@ -193,3 +193,230 @@ impl Receiver {
 fn bytes_to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02X}", b)).collect()
 }
+
+// ---------------------------------------------------------------------------
+// Pairing
+// ---------------------------------------------------------------------------
+
+// Sub-IDs for receiver pairing notifications.
+const NOTIF_PAIRING_LOCK:         u8 = 0x4A; // Unifying: lock opened/closed
+const NOTIF_DJ_PAIRING:           u8 = 0x41; // Unifying: new device connection
+const NOTIF_PASSKEY_REQUEST:      u8 = 0x4D; // Bolt: passkey request
+const NOTIF_DEVICE_DISCOVERY:     u8 = 0x4F; // Bolt: device found during discovery
+const NOTIF_DISCOVERY_STATUS:     u8 = 0x53; // Bolt: discovery lock open/closed
+const NOTIF_PAIRING_STATUS:       u8 = 0x54; // Bolt: pairing lock open/closed
+
+/// Device discovered by a Bolt receiver during the discovery phase.
+/// Collected across up to two 0x4F notification chunks before pairing is initiated.
+pub struct BoltDiscoveredDevice {
+    pub address:        [u8; 6],
+    pub authentication: u8,
+    pub kind:           u8,
+    pub name:           String,
+}
+
+/// State kept across calls to Receiver::poll_pairing.
+pub struct PairingSession {
+    // Unifying: slot of a newly connected device (set on 0x41 notification).
+    pub unifying_new_slot:  Option<u8>,
+    // Bolt: data collected from 0x4F discovery notifications.
+    pub bolt_discovered:    Option<BoltDiscoveredDevice>,
+    // Bolt: passkey string (numeric digits to type, or button sequence).
+    pub passkey:            Option<String>,
+}
+
+impl PairingSession {
+    pub fn new() -> Self {
+        Self { unifying_new_slot: None, bolt_discovered: None, passkey: None }
+    }
+}
+
+/// Events returned by Receiver::poll_pairing.
+pub enum PairingEvent {
+    /// Still waiting; no relevant notification received within the timeout.
+    Waiting,
+    /// Bolt: a compatible device was found and pairing has been initiated.
+    BoltDeviceFound(String),
+    /// Bolt: numeric passkey -- user must type these digits on the keyboard, then press Enter.
+    PasskeyNumeric(String),
+    /// Bolt: button passkey -- encoded as a string of 'L'/'R' characters; press simultaneously when done.
+    PasskeyButton(String),
+    /// Pairing complete. slot is the 1-based slot of the new device.
+    Paired(u8),
+    /// Pairing failed.
+    Failed(String),
+}
+
+impl Receiver {
+    /// Unpair the device in the given 1-based slot.
+    pub fn unpair_device(&self, slot: u8) -> Result<()> {
+        if self.kind == ReceiverKind::Bolt {
+            hidpp10::bolt_unpair_device(&self.transport, slot)
+        } else {
+            hidpp10::unpair_device(&self.transport, slot)
+        }
+    }
+
+    /// Open the pairing lock (Unifying) or start device discovery (Bolt).
+    /// Returns a PairingSession that must be passed to poll_pairing.
+    /// timeout_secs: maximum time the receiver will wait for a device (0-255).
+    pub fn start_pairing(&self, timeout_secs: u8) -> Result<PairingSession> {
+        // Enable wireless connection notifications so we receive pairing events.
+        if let Ok(flags) = hidpp10::get_notification_flags(&self.transport) {
+            let needed = hidpp10::NOTIF_WIRELESS | hidpp10::NOTIF_SOFTWARE_PRESENT;
+            if flags & needed != needed {
+                let _ = hidpp10::set_notification_flags(&self.transport, flags | needed);
+            }
+        }
+
+        if self.kind == ReceiverKind::Bolt {
+            hidpp10::bolt_start_discovery(&self.transport, false, timeout_secs)?;
+        } else {
+            hidpp10::set_pairing_lock(&self.transport, true, timeout_secs)?;
+        }
+        Ok(PairingSession::new())
+    }
+
+    /// Poll for one pairing event. Blocks for at most timeout_ms milliseconds.
+    /// Call in a loop (e.g. every 200 ms) until Paired or Failed is returned.
+    pub fn poll_pairing(&self, session: &mut PairingSession, timeout_ms: i32) -> Result<PairingEvent> {
+        let msg = match self.transport.read_notification(timeout_ms)? {
+            Some(m) => m,
+            None    => return Ok(PairingEvent::Waiting),
+        };
+
+        // Ignore HID++ reply messages (sub_id >= 0x80); we only care about notifications.
+        let sub_id = msg.sub_id();
+        if sub_id >= 0x80 {
+            return Ok(PairingEvent::Waiting);
+        }
+
+        let address = msg.address();
+        let params  = msg.params().to_vec(); // clone to avoid borrow issues
+
+        if self.kind == ReceiverKind::Bolt {
+            match sub_id {
+                NOTIF_DISCOVERY_STATUS => {
+                    // address 0x00: discovering; anything else: stopped.
+                    let error = params.first().copied().unwrap_or(0);
+                    if address != 0x00 && error != 0 {
+                        return Ok(PairingEvent::Failed(format!("discovery error 0x{:02X}", error)));
+                    }
+                    Ok(PairingEvent::Waiting)
+                }
+                NOTIF_DEVICE_DISCOVERY => {
+                    // Two chunks arrive for each discovered device.
+                    // Chunk type is at params[1]: 0 = address/auth/kind, 1 = name.
+                    let chunk = params.get(1).copied().unwrap_or(0xFF);
+                    if chunk == 0 && params.len() >= 15 {
+                        let mut addr = [0u8; 6];
+                        addr.copy_from_slice(&params[6..12]);
+                        session.bolt_discovered = Some(BoltDiscoveredDevice {
+                            address:        addr,
+                            authentication: params[14],
+                            kind:           params[3],
+                            name:           String::new(),
+                        });
+                    } else if chunk == 1 {
+                        if let Some(dev) = &mut session.bolt_discovered {
+                            let name_len = params.get(2).copied().unwrap_or(0) as usize;
+                            let end = (3 + name_len).min(params.len());
+                            dev.name = String::from_utf8_lossy(&params[3..end]).into_owned();
+                        }
+                        // Kick off pairing once we have both chunks.
+                        if let Some(dev) = &session.bolt_discovered {
+                            if !dev.name.is_empty() {
+                                // Keyboards get 20 bits of entropy (numeric passkey);
+                                // other devices get 10 (button passkey).
+                                let entropy = if dev.kind == 1 { 20u8 } else { 10u8 };
+                                hidpp10::bolt_pair_device(
+                                    &self.transport, 0, &dev.address, dev.authentication, entropy,
+                                )?;
+                                return Ok(PairingEvent::BoltDeviceFound(dev.name.clone()));
+                            }
+                        }
+                    }
+                    Ok(PairingEvent::Waiting)
+                }
+                NOTIF_PASSKEY_REQUEST => {
+                    // params[0..6] = passkey as ASCII digits or a button bitmask string.
+                    let raw = &params[..6.min(params.len())];
+                    let passkey = String::from_utf8_lossy(raw).trim_end_matches('\0').to_owned();
+                    session.passkey = Some(passkey.clone());
+                    // Determine keyboard vs button passkey by authentication flags.
+                    // authentication bit 0 = requires numeric passkey.
+                    let auth = session.bolt_discovered.as_ref().map(|d| d.authentication).unwrap_or(0);
+                    if auth & 0x01 != 0 {
+                        Ok(PairingEvent::PasskeyNumeric(passkey))
+                    } else {
+                        // Encode button bitmask as L/R string: each bit 1=right, 0=left.
+                        let buttons = passkey_to_buttons(raw);
+                        Ok(PairingEvent::PasskeyButton(buttons))
+                    }
+                }
+                NOTIF_PAIRING_STATUS => {
+                    // address 0x00: lock open; 0x01: lock closed no device; 0x02: paired.
+                    let error = params.first().copied().unwrap_or(0);
+                    if error != 0 {
+                        return Ok(PairingEvent::Failed(format!("pairing error 0x{:02X}", error)));
+                    }
+                    if address == 0x02 {
+                        let slot = params.get(7).copied().unwrap_or(0);
+                        return Ok(PairingEvent::Paired(slot));
+                    }
+                    Ok(PairingEvent::Waiting)
+                }
+                _ => Ok(PairingEvent::Waiting),
+            }
+        } else {
+            // Unifying / Nano / LightSpeed
+            match sub_id {
+                NOTIF_DJ_PAIRING if msg.device() != 0xFF => {
+                    // New device connected; device() holds its 1-based slot.
+                    session.unifying_new_slot = Some(msg.device());
+                    Ok(PairingEvent::Waiting)
+                }
+                NOTIF_PAIRING_LOCK => {
+                    let lock_open = address & 0x01 != 0;
+                    let error     = params.first().copied().unwrap_or(0);
+                    if lock_open {
+                        return Ok(PairingEvent::Waiting);
+                    }
+                    // Lock closed.
+                    if error != 0 {
+                        return Ok(PairingEvent::Failed(format!("pairing error 0x{:02X}", error)));
+                    }
+                    match session.unifying_new_slot {
+                        Some(slot) => Ok(PairingEvent::Paired(slot)),
+                        None       => Ok(PairingEvent::Failed("no device connected before lock closed".to_owned())),
+                    }
+                }
+                _ => Ok(PairingEvent::Waiting),
+            }
+        }
+    }
+
+    /// Cancel an in-progress pairing by closing the lock / stopping discovery.
+    pub fn cancel_pairing(&self) -> Result<()> {
+        if self.kind == ReceiverKind::Bolt {
+            hidpp10::bolt_start_discovery(&self.transport, true, 0)?;
+        } else {
+            hidpp10::set_pairing_lock(&self.transport, false, 0)?;
+        }
+        Ok(())
+    }
+}
+
+/// Convert a Bolt button-passkey byte slice to an L/R string.
+/// Each bit: 1=right, 0=left. First bit is MSB of first byte.
+/// Solaar uses 10 bits, so we produce 10 characters.
+fn passkey_to_buttons(raw: &[u8]) -> String {
+    let mut bits = Vec::with_capacity(10);
+    'outer: for byte in raw {
+        for shift in (0..8u8).rev() {
+            bits.push(if byte & (1 << shift) != 0 { 'R' } else { 'L' });
+            if bits.len() == 10 { break 'outer; }
+        }
+    }
+    bits.iter().collect()
+}

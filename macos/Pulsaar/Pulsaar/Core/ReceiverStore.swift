@@ -36,6 +36,9 @@ final class ReceiverStore {
         isLoading = true
         errorMessage = nil
 
+        // Refresh the HID device tree so plug/unplug events are reflected.
+        pulsaar_refresh_receivers(ctx)
+
         var result: [ReceiverModel] = []
         let count = pulsaar_get_receiver_count(ctx)
 

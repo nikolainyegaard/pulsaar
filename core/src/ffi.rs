@@ -26,7 +26,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
-use crate::receiver::{ReceiverHandle, ReceiverKind, Receiver, enumerate_receivers};
+use crate::receiver::{ReceiverHandle, ReceiverKind, Receiver, PairingSession, PairingEvent, enumerate_receivers};
 
 // ---------------------------------------------------------------------------
 // Status codes (keep in sync with the From<Error> impl below)
@@ -120,6 +120,43 @@ pub struct CDeviceInfo {
 }
 
 // ---------------------------------------------------------------------------
+// Pairing types
+// ---------------------------------------------------------------------------
+
+/// State of an in-progress pairing operation.
+#[repr(C)]
+pub enum PulsaarPairingState {
+    /// Lock open, waiting for a device to initiate pairing.
+    Waiting        = 0,
+    /// Bolt: a compatible device was found and pairing has been initiated.
+    DeviceFound    = 1,
+    /// Bolt: the device requires the user to type a numeric passkey on the keyboard, then press Enter.
+    PasskeyNumeric = 2,
+    /// Bolt: the device requires the user to press buttons in the sequence encoded in passkey.
+    PasskeyButton  = 3,
+    /// Pairing completed successfully.
+    Paired         = 4,
+    /// Pairing failed; see error field for a description.
+    Failed         = 5,
+    /// No pairing is currently in progress.
+    Idle           = 6,
+}
+
+/// Result of one pulsaar_poll_pairing call.
+#[repr(C)]
+pub struct CPairingStatus {
+    pub state:       PulsaarPairingState,
+    /// Name of the newly found or paired device (valid for DeviceFound, Paired).
+    pub device_name: [u8; 64],
+    /// Passkey string (valid for PasskeyNumeric, PasskeyButton).
+    /// PasskeyNumeric: ASCII digit string to type on the keyboard.
+    /// PasskeyButton:  10-character L/R sequence; press corresponding buttons, then both simultaneously.
+    pub passkey:     [u8; 16],
+    /// Human-readable error description (valid for Failed).
+    pub error:       [u8; 64],
+}
+
+// ---------------------------------------------------------------------------
 // Opaque context types (heap-allocated; exposed as raw pointers to callers)
 // ---------------------------------------------------------------------------
 
@@ -135,6 +172,7 @@ pub struct PulsaarContext {
 pub struct PulsaarReceiverContext {
     receiver: Receiver,
     devices:  Vec<DeviceInfo>,
+    pairing:  Option<PairingSession>,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +295,28 @@ pub extern "C" fn pulsaar_init() -> *mut PulsaarContext {
     }
 }
 
+/// Re-scan the HID device tree and update the receiver list in place.
+///
+/// Call this after plugging or unplugging a receiver, before calling
+/// pulsaar_get_receiver_count / pulsaar_get_receiver_info again.
+/// Any previously opened PulsaarReceiverContext pointers remain valid.
+/// Returns InvalidArg if ctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_refresh_receivers(ctx: *mut PulsaarContext) -> PulsaarStatus {
+    if ctx.is_null() { return PulsaarStatus::InvalidArg; }
+    let ctx = &mut *ctx;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
+        ctx.receivers = enumerate_receivers(&ctx.api);
+        Ok::<_, crate::error::Error>(())
+    }));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
 /// Free the session context. Safe to call with null.
 #[no_mangle]
 pub unsafe extern "C" fn pulsaar_destroy(ctx: *mut PulsaarContext) {
@@ -321,6 +381,7 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
             Box::into_raw(Box::new(PulsaarReceiverContext {
                 receiver,
                 devices: Vec::new(),
+                pairing: None,
             }))
         }
         Err(e) => fail!(PulsaarStatus::from(e)),
@@ -389,5 +450,143 @@ pub unsafe extern "C" fn pulsaar_get_device_info(
         None    => return PulsaarStatus::InvalidArg,
     };
     *out = device_info_to_c(device);
+    PulsaarStatus::Ok
+}
+
+/// Unpair the device in slot from the opened receiver.
+/// slot: 1-based device slot number as returned in CDeviceInfo.slot.
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_unpair_device(
+    rctx: *mut PulsaarReceiverContext,
+    slot: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    let result = catch_unwind(AssertUnwindSafe(|| rctx.receiver.unpair_device(slot)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Open the pairing lock (Unifying/Nano/LightSpeed) or start device discovery (Bolt).
+/// timeout_secs: how long the receiver will wait for a device (1-255, receiver default if 0).
+/// After this returns Ok, call pulsaar_poll_pairing in a loop until Paired or Failed.
+/// Returns InvalidArg if rctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_start_pairing(
+    rctx:         *mut PulsaarReceiverContext,
+    timeout_secs: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    let result = catch_unwind(AssertUnwindSafe(|| rctx.receiver.start_pairing(timeout_secs)));
+    match result {
+        Ok(Ok(session)) => { rctx.pairing = Some(session); PulsaarStatus::Ok }
+        Ok(Err(e))      => PulsaarStatus::from(e),
+        Err(_)          => PulsaarStatus::Unknown,
+    }
+}
+
+/// Poll for one pairing event. Blocks for at most timeout_ms milliseconds.
+/// out is filled with the current pairing state.
+/// Call in a loop after pulsaar_start_pairing until out.state is Paired or Failed.
+/// Returns InvalidArg if rctx or out is null, or if pairing has not been started.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_poll_pairing(
+    rctx:       *mut PulsaarReceiverContext,
+    timeout_ms: u32,
+    out:        *mut CPairingStatus,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    let session = match &mut rctx.pairing {
+        Some(s) => s,
+        None    => {
+            (*out).state = PulsaarPairingState::Idle;
+            return PulsaarStatus::Ok;
+        }
+    };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        rctx.receiver.poll_pairing(session, timeout_ms as i32)
+    }));
+
+    let event = match result {
+        Ok(Ok(e))  => e,
+        Ok(Err(e)) => { return PulsaarStatus::from(e); }
+        Err(_)     => { return PulsaarStatus::Unknown; }
+    };
+
+    // Safety: out is non-null, checked above.
+    let status = &mut *out;
+    // Zero the output struct.
+    *status = CPairingStatus {
+        state:       PulsaarPairingState::Waiting,
+        device_name: [0u8; 64],
+        passkey:     [0u8; 16],
+        error:       [0u8; 64],
+    };
+
+    match event {
+        PairingEvent::Waiting => {
+            status.state = PulsaarPairingState::Waiting;
+        }
+        PairingEvent::BoltDeviceFound(name) => {
+            status.state = PulsaarPairingState::DeviceFound;
+            let b = name.as_bytes();
+            let n = b.len().min(63);
+            status.device_name[..n].copy_from_slice(&b[..n]);
+        }
+        PairingEvent::PasskeyNumeric(pk) => {
+            status.state = PulsaarPairingState::PasskeyNumeric;
+            let b = pk.as_bytes();
+            let n = b.len().min(15);
+            status.passkey[..n].copy_from_slice(&b[..n]);
+        }
+        PairingEvent::PasskeyButton(pk) => {
+            status.state = PulsaarPairingState::PasskeyButton;
+            let b = pk.as_bytes();
+            let n = b.len().min(15);
+            status.passkey[..n].copy_from_slice(&b[..n]);
+        }
+        PairingEvent::Paired(slot) => {
+            status.state = PulsaarPairingState::Paired;
+            // Embed slot in device_name[0] for easy retrieval.
+            status.device_name[0] = slot;
+            rctx.pairing = None; // session is done
+        }
+        PairingEvent::Failed(msg) => {
+            status.state = PulsaarPairingState::Failed;
+            let b = msg.as_bytes();
+            let n = b.len().min(63);
+            status.error[..n].copy_from_slice(&b[..n]);
+            rctx.pairing = None;
+        }
+    }
+
+    PulsaarStatus::Ok
+}
+
+/// Cancel an in-progress pairing. Closes the lock / stops discovery.
+/// Safe to call even if pairing is not in progress.
+/// Returns InvalidArg if rctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_cancel_pairing(
+    rctx: *mut PulsaarReceiverContext,
+) -> PulsaarStatus {
+    if rctx.is_null() { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    if rctx.pairing.is_some() {
+        let result = catch_unwind(AssertUnwindSafe(|| rctx.receiver.cancel_pairing()));
+        rctx.pairing = None;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return PulsaarStatus::from(e),
+            Err(_)     => return PulsaarStatus::Unknown,
+        }
+    }
     PulsaarStatus::Ok
 }
