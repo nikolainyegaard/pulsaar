@@ -318,10 +318,11 @@ final class ReceiverStore {
     // Unpair a device from its receiver, then reload.
     // Returns true on success.
     func unpair(device: DeviceModel) -> Bool {
+        stopEventListeners()
         let ok = withReceiverContext(for: device.receiverIndex) { rctx in
             pulsaar_unpair_device(rctx, device.slot) == PulsaarStatusOk
         }
-        if ok { reload() }
+        if ok { reload() } else { restartEventListeners() }
         return ok
     }
 
