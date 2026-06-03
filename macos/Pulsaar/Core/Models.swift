@@ -219,6 +219,27 @@ struct DeviceModel: Identifiable {
     }
 }
 
+struct DirectDeviceModel: Identifiable {
+    let id: String          // serial if non-empty, else "direct-<productId>"
+    let productId: UInt16
+    let kind: DeviceKind
+    let name: String
+    let serial: String
+    let battery: BatteryModel?
+    let isOnline: Bool      // always true: if enumerated, the device responded to the HID++ probe
+
+    init(c: CDirectDeviceInfo) {
+        let serialStr = cBufToString(c.serial)
+        id        = serialStr.isEmpty ? "direct-\(c.product_id)" : serialStr
+        productId = c.product_id
+        kind      = DeviceKind(byte: c.kind)
+        name      = cBufToString(c.name)
+        serial    = serialStr
+        battery   = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
+        isOnline  = true
+    }
+}
+
 struct ReceiverModel: Identifiable {
     let id: Int             // index within the session's receiver list
     let productId: UInt16

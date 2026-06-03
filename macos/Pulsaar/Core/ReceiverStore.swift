@@ -20,6 +20,7 @@ enum PairingStage: Equatable {
 @Observable
 final class ReceiverStore {
     var receivers: [ReceiverModel] = []
+    var directDevices: [DirectDeviceModel] = []
     var isLoading = false
     var errorMessage: String? = nil
 
@@ -384,6 +385,19 @@ final class ReceiverStore {
         }
 
         receivers = result
+
+        // Read directly-connected (Bluetooth) devices. pulsaar_refresh_receivers already
+        // re-ran enumerate_direct_devices inside the Rust context, so the count is fresh.
+        var directResult: [DirectDeviceModel] = []
+        let dcount = pulsaar_get_direct_device_count(ctx)
+        for i in 0..<dcount {
+            var info = CDirectDeviceInfo()
+            if pulsaar_get_direct_device_info(ctx, i, &info) == PulsaarStatusOk {
+                directResult.append(DirectDeviceModel(c: info))
+            }
+        }
+        directDevices = directResult
+
         isLoading = false
         restartEventListeners()
     }

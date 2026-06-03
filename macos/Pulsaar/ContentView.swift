@@ -1,9 +1,10 @@
 import SwiftUI
 
-// Sidebar selection: a receiver row or a device row.
+// Sidebar selection: a receiver row, a receiver-hosted device row, or a direct BT device row.
 enum SidebarItem: Hashable {
     case receiver(Int)
-    case device(String)  // device.id ("receiverIndex-slot")
+    case device(String)        // DeviceModel.id ("receiverIndex-slot")
+    case directDevice(String)  // DirectDeviceModel.id (serial or "direct-<pid>")
 }
 
 struct ContentView: View {
@@ -30,16 +31,21 @@ struct ContentView: View {
             } else if let error = store.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary)
-            } else if store.receivers.isEmpty {
-                Label("No receivers found", systemImage: "antenna.radiowaves.left.and.right")
+            } else if store.receivers.isEmpty && store.directDevices.isEmpty {
+                Label("No devices found", systemImage: "antenna.radiowaves.left.and.right")
                     .foregroundStyle(.secondary)
             } else {
+                // Direct (Bluetooth) devices at the top level, no tree lines.
+                ForEach(store.directDevices) { device in
+                    DirectDeviceSidebarRow(device: device)
+                        .tag(SidebarItem.directDevice(device.id))
+                }
+
+                // Receivers with their paired devices indented beneath.
                 ForEach(store.receivers) { receiver in
-                    // Receiver as a top-level selectable row.
                     ReceiverSidebarRow(receiver: receiver)
                         .tag(SidebarItem.receiver(receiver.id))
 
-                    // Devices indented beneath their receiver.
                     ForEach(Array(receiver.devices.enumerated()), id: \.element.id) { index, device in
                         DeviceSidebarRow(device: device, isLast: index == receiver.devices.count - 1)
                             .tag(SidebarItem.device(device.id))
@@ -66,6 +72,12 @@ struct ContentView: View {
         case .receiver(let id):
             if let receiver = store.receivers.first(where: { $0.id == id }) {
                 ReceiverDetailView(receiver: receiver)
+            } else {
+                emptyState
+            }
+        case .directDevice(let id):
+            if let device = store.directDevices.first(where: { $0.id == id }) {
+                DirectDeviceDetailView(device: device)
             } else {
                 emptyState
             }
@@ -359,6 +371,142 @@ struct ReceiverDetailView: View {
         }) {
             PairingSheetView(receiver: receiver)
         }
+    }
+}
+
+// MARK: - Direct device sidebar row
+
+struct DirectDeviceSidebarRow: View {
+    let device: DirectDeviceModel
+
+    var body: some View {
+        HStack {
+            Label {
+                Text(device.name)
+                    .fontWeight(.medium)
+            } icon: {
+                Image(systemName: device.kind.systemImage)
+            }
+
+            Spacer()
+
+            if let battery = device.battery {
+                HStack(spacing: 3) {
+                    if battery.isCached {
+                        Image(systemName: "clock")
+                            .font(.caption2)
+                    }
+                    Text(battery.levelText)
+                        .font(.caption2)
+                    Image(systemName: battery.batterySystemImage)
+                        .font(.caption2)
+                }
+                .foregroundStyle(sidebarBatteryColor(battery))
+            }
+        }
+    }
+
+    private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
+        if battery.isCached { return .secondary }
+        if battery.status?.isCharging == true { return .green }
+        guard let level = battery.level else { return .secondary }
+        if level <= 10 { return .red }
+        if level <= 25 { return .orange }
+        return .secondary
+    }
+}
+
+// MARK: - Direct device detail
+
+struct DirectDeviceDetailView: View {
+    let device: DirectDeviceModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            deviceHeader
+            Divider()
+            deviceProperties
+        }
+        .navigationTitle(device.name)
+    }
+
+    private var deviceHeader: some View {
+        HStack(spacing: 20) {
+            Image(systemName: device.kind.systemImage)
+                .font(.system(size: 44))
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(device.name)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                HStack(spacing: 6) {
+                    Image(systemName: "bluetooth")
+                        .font(.subheadline)
+                    Text("Bluetooth")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Spacer()
+
+            if let battery = device.battery {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Image(systemName: battery.batterySystemImage)
+                        .font(.system(size: 28))
+                        .foregroundStyle(batteryColor(battery))
+                        .frame(height: 28)
+                    Text(battery.levelText)
+                        .font(.headline)
+                        .foregroundStyle(batteryColor(battery))
+                    if battery.isCached {
+                        Text("Last seen")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+    }
+
+    @ViewBuilder
+    private var deviceProperties: some View {
+        List {
+            if let battery = device.battery {
+                Section(battery.isCached ? "Battery (last seen)" : "Battery") {
+                    LabeledContent("Level", value: battery.levelText)
+                    if let status = battery.status {
+                        LabeledContent("Status", value: status.label)
+                    }
+                    if let voltage = battery.voltage {
+                        LabeledContent("Voltage", value: "\(voltage) mV")
+                    }
+                }
+            }
+
+            Section("Device") {
+                LabeledContent("Type", value: device.kind.label)
+                LabeledContent("Connection", value: "Bluetooth")
+                LabeledContent("Product ID", value: String(format: "0x%04X", device.productId))
+                if !device.serial.isEmpty {
+                    LabeledContent("Serial", value: device.serial)
+                }
+            }
+        }
+    }
+
+    private func batteryColor(_ battery: BatteryModel) -> Color {
+        if battery.isCached { return .secondary }
+        if battery.status?.isCharging == true { return .green }
+        guard let level = battery.level else { return .secondary }
+        if level <= 10 { return .red }
+        if level <= 25 { return .orange }
+        return .primary
     }
 }
 
