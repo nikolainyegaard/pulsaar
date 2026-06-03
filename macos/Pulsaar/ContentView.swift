@@ -112,18 +112,18 @@ struct TreeConnector: View {
             let midX = size.width / 2
             let midY = size.height / 2
             let style = StrokeStyle(lineWidth: 1, lineCap: .round, dash: [2, 3])
+            let shading = GraphicsContext.Shading.color(.gray.opacity(0.5))
 
             var vert = Path()
             vert.move(to: CGPoint(x: midX, y: 0))
             vert.addLine(to: CGPoint(x: midX, y: isLast ? midY : size.height))
-            context.stroke(vert, with: .foreground, style: style)
+            context.stroke(vert, with: shading, style: style)
 
             var horiz = Path()
             horiz.move(to: CGPoint(x: midX, y: midY))
             horiz.addLine(to: CGPoint(x: size.width, y: midY))
-            context.stroke(horiz, with: .foreground, style: style)
+            context.stroke(horiz, with: shading, style: style)
         }
-        .foregroundStyle(.tertiary)
     }
 }
 

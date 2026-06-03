@@ -193,6 +193,7 @@ final class ReceiverStore {
     // The pairing sheet should call this in its onAppear.
     func startPairing(receiverIndex: Int, timeoutSecs: UInt8 = 30) {
         guard let ctx else { return }
+        stopEventListeners()
         cleanupPairingResources()
 
         var openStatus = PulsaarStatusUnknown
@@ -268,6 +269,7 @@ final class ReceiverStore {
             pulsaar_cancel_pairing(rctx)
         }
         cleanupPairing()
+        restartEventListeners()
     }
 
     // Reset pairing state to idle without cancelling (call after successful pair + sheet dismiss).
