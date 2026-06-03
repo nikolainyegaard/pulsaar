@@ -450,7 +450,17 @@ impl Receiver {
                     Ok(None)
                 }
             }
-            _ => Ok(None),
+            _ => {
+                // HID++ 2.0 unsolicited feature notification: sub_id is the feature
+                // index and the low nibble of address is the software ID (0 for
+                // device-originated events, non-zero for replies and input events).
+                // Covers battery status, charging state, WIRELESS_DEVICE_STATUS, etc.
+                if sub_id > 0 && msg.address() & 0x0F == 0x00 {
+                    Ok(Some((slot, true)))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 

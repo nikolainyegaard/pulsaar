@@ -153,7 +153,7 @@ struct BatteryModel {
 
     var batterySystemImage: String {
         let charging = status?.isCharging ?? false
-        let suffix = charging ? ".bolt" : ""
+        let suffix = charging ? "percent.bolt" : "percent"
         guard let l = level else { return "battery.0\(suffix)" }
         switch l {
         case 75...: return "battery.100\(suffix)"

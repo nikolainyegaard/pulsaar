@@ -12,7 +12,7 @@ struct PulsaarApp: App {
         .commands {
             CommandMenu("Receivers") {
                 Button("Force Refresh") {
-                    store.reload()
+                    store.reload(showIndicator: true)
                 }
                 .keyboardShortcut("r", modifiers: .command)
             }

@@ -43,6 +43,7 @@ final class ReceiverStore {
     @ObservationIgnored private var hidMonitor: IOHIDManager? = nil
     @ObservationIgnored private var eventListeners: [OpaquePointer] = []
     @ObservationIgnored private var eventTimer: Timer? = nil
+    @ObservationIgnored private var pendingEventReload: DispatchWorkItem? = nil
 
     var isPairing: Bool { pairingStage != .idle }
 
@@ -62,10 +63,9 @@ final class ReceiverStore {
             IOHIDManagerUnscheduleFromRunLoop(monitor, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
             IOHIDManagerClose(monitor, IOOptionBits(kIOHIDOptionsTypeNone))
         }
+        pendingEventReload?.cancel()
         eventTimer?.invalidate()
-        for listener in eventListeners {
-            pulsaar_close_event_listener(listener)
-        }
+        for listener in eventListeners { pulsaar_close_event_listener(listener) }
         pairingTimer?.invalidate()
         if let rctx = pairingRctx {
             pulsaar_cancel_pairing(rctx)
@@ -114,14 +114,23 @@ final class ReceiverStore {
     // Device connection-state event listeners (one per receiver)
     // ---------------------------------------------------------------------------
 
-    // Called at the end of every reload(). Closes old listeners, opens new ones
-    // for all currently known receivers, and (re)starts the polling timer.
-    private func restartEventListeners() {
+    // Tear down all event listeners and cancel any pending delayed reload.
+    // Called at the start of reload() so the receiver handle is free for enumeration,
+    // and by restartEventListeners() before opening new ones.
+    private func stopEventListeners() {
+        pendingEventReload?.cancel()
+        pendingEventReload = nil
         stopEventTimer()
         for listener in eventListeners {
             pulsaar_close_event_listener(listener)
         }
         eventListeners.removeAll()
+    }
+
+    // Called at the end of every reload(). Opens one listener per receiver and
+    // starts the polling timer.
+    private func restartEventListeners() {
+        stopEventListeners()
 
         guard let ctx else { return }
 
@@ -145,10 +154,20 @@ final class ReceiverStore {
             var event = CDeviceConnectionEvent()
             pulsaar_poll_device_event(listener, 0, &event)
             if event.event != PulsaarConnectionEventNone {
-                reload()
+                scheduleEventReload()
                 return
             }
         }
+    }
+
+    // Debounced reload for device state events. Waits 750 ms after the last event
+    // before reloading, giving the device and receiver time to finish the transition.
+    // If another event arrives within that window the timer resets.
+    private func scheduleEventReload() {
+        pendingEventReload?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.reload() }
+        pendingEventReload = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
     }
 
     private func stopEventTimer() {
@@ -304,9 +323,15 @@ final class ReceiverStore {
         return ok
     }
 
-    func reload() {
+    // showIndicator: true for user-initiated reloads (shows "Scanning..." in sidebar).
+    // false (default) for automatic reloads; the sidebar stays as-is until the
+    // new state is ready, then updates atomically with no intermediate blank state.
+    func reload(showIndicator: Bool = false) {
         guard let ctx else { return }
-        isLoading = true
+        // Close event listeners before opening receivers for enumeration so there
+        // is no competing HID handle on the same device during the reload.
+        stopEventListeners()
+        if showIndicator { isLoading = true }
         errorMessage = nil
 
         // Refresh the HID device tree so plug/unplug events are reflected.
