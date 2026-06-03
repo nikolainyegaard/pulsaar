@@ -15,9 +15,10 @@ struct ContentView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 200, ideal: 280)
+                .navigationSplitViewColumnWidth(min: 240, ideal: 300)
         } detail: {
             detailPane
+                .navigationSplitViewColumnWidth(min: 320, ideal: 480)
         }
     }
 
@@ -285,21 +286,6 @@ struct DeviceDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay {
-            if showingInfo {
-                ZStack {
-                    Color.black.opacity(0.15)
-                        .onTapGesture { showingInfo = false }
-                    DeviceInfoSheet(device: device)
-                        .frame(width: 360, height: 380)
-                        .background(.background)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .shadow(color: .black.opacity(0.25), radius: 20)
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: showingInfo)
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -307,6 +293,13 @@ struct DeviceDetailView: View {
                     Label("Device info", systemImage: "info.circle")
                 }
             }
+        }
+        .sheet(isPresented: $showingInfo) {
+            NavigationStack {
+                DeviceInfoSheet(device: device)
+                    .navigationTitle(device.name)
+            }
+            .frame(minWidth: 340, minHeight: 380)
         }
         .confirmationDialog(
             "Unpair \(device.name)?",
@@ -332,6 +325,7 @@ struct DeviceDetailView: View {
 
 private struct DeviceInfoSheet: View {
     let device: DeviceModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -352,10 +346,50 @@ private struct DeviceInfoSheet: View {
                 LabeledContent("Product ID", value: device.productId)
                 LabeledContent("Slot", value: "\(device.slot)")
                 if !device.serial.isEmpty {
-                    LabeledContent("Serial", value: device.serial)
+                    LabeledContent("Serial") {
+                        Text(device.serial)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
             }
         }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
+            }
+        }
+    }
+}
+
+// MARK: - Receiver header
+
+private struct ReceiverHeader: View {
+    let receiver: ReceiverModel
+
+    var body: some View {
+        HStack(spacing: 20) {
+            Image(systemName: receiver.kind.systemImage)
+                .font(.system(size: 44))
+                .foregroundStyle(.primary)
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(receiver.name)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text("\(receiver.devices.count) of \(receiver.maxDevices) devices paired")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
     }
 }
 
@@ -366,36 +400,42 @@ struct ReceiverDetailView: View {
     @Environment(ReceiverStore.self) private var store
     @State private var showingPairingSheet = false
 
+    private var canPair: Bool { receiver.devices.count < Int(receiver.maxDevices) }
+
     var body: some View {
-        List {
-            Section("Receiver") {
-                LabeledContent("Name", value: receiver.name)
-                LabeledContent("Kind", value: receiver.kind.label)
-                LabeledContent("Product ID", value: String(format: "0x%04X", receiver.productId))
-                LabeledContent("Serial", value: receiver.serial.isEmpty ? "unknown" : receiver.serial)
-                LabeledContent("Max devices", value: "\(receiver.maxDevices)")
-            }
-
-            Section("Paired devices") {
-                ForEach(receiver.devices) { device in
-                    HStack {
-                        Label(device.name, systemImage: device.kind.systemImage)
-                        Spacer()
-                        Text(device.isOnline ? "Online" : "Offline")
-                            .font(.caption)
-                            .foregroundStyle(device.isOnline ? .green : .secondary)
+        VStack(spacing: 0) {
+            ReceiverHeader(receiver: receiver)
+            Divider()
+            List {
+                Section("Receiver") {
+                    LabeledContent("Kind", value: receiver.kind.label)
+                    LabeledContent("Product ID", value: String(format: "0x%04X", receiver.productId))
+                    LabeledContent("Serial") {
+                        Text(receiver.serial.isEmpty ? "Unknown" : receiver.serial)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                    .opacity(device.isOnline ? 1.0 : 0.5)
+                    LabeledContent("Max devices", value: "\(receiver.maxDevices)")
                 }
-
-                if receiver.devices.isEmpty {
-                    Text("No devices paired")
-                        .foregroundStyle(.secondary)
+                Section("Paired devices") {
+                    ForEach(receiver.devices) { device in
+                        HStack {
+                            Label(device.name, systemImage: device.kind.systemImage)
+                            Spacer()
+                            Text(device.isOnline ? "Online" : "Offline")
+                                .font(.caption)
+                                .foregroundStyle(device.isOnline ? .green : .secondary)
+                        }
+                        .opacity(device.isOnline ? 1.0 : 0.5)
+                    }
+                    if receiver.devices.isEmpty {
+                        Text("No devices paired")
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
-
-            let canPair = receiver.devices.count < Int(receiver.maxDevices)
-            Section {
+            Divider()
+            VStack(spacing: 6) {
                 Button {
                     showingPairingSheet = true
                 } label: {
@@ -407,12 +447,14 @@ struct ReceiverDetailView: View {
                     Text("All \(receiver.maxDevices) slots are in use. Unpair a device first.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
                 }
             }
+            .padding()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .navigationTitle(receiver.name)
         .sheet(isPresented: $showingPairingSheet, onDismiss: {
-            // Sheet dismissed by any means: clean up pairing state.
             if store.pairingStage == .paired {
                 store.resetPairing()
             } else {
@@ -492,21 +534,6 @@ struct DirectDeviceDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .overlay {
-            if showingInfo {
-                ZStack {
-                    Color.black.opacity(0.15)
-                        .onTapGesture { showingInfo = false }
-                    DirectDeviceInfoSheet(device: device)
-                        .frame(width: 360, height: 380)
-                        .background(.background)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .shadow(color: .black.opacity(0.25), radius: 20)
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.15), value: showingInfo)
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -515,11 +542,19 @@ struct DirectDeviceDetailView: View {
                 }
             }
         }
+        .sheet(isPresented: $showingInfo) {
+            NavigationStack {
+                DirectDeviceInfoSheet(device: device)
+                    .navigationTitle(device.name)
+            }
+            .frame(minWidth: 340, minHeight: 380)
+        }
     }
 }
 
 private struct DirectDeviceInfoSheet: View {
     let device: DirectDeviceModel
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -539,8 +574,17 @@ private struct DirectDeviceInfoSheet: View {
                 LabeledContent("Connection", value: device.connectionLabel)
                 LabeledContent("Product ID", value: String(format: "0x%04X", device.productId))
                 if !device.serial.isEmpty {
-                    LabeledContent("Serial", value: device.serial)
+                    LabeledContent("Serial") {
+                        Text(device.serial)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                 }
+            }
+        }
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") { dismiss() }
             }
         }
     }
