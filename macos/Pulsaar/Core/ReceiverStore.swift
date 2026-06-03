@@ -366,7 +366,8 @@ final class ReceiverStore {
                 for j in 0..<dcount {
                     var dev = CDeviceInfo()
                     if pulsaar_get_device_info(rctx, j, &dev) == PulsaarStatusOk {
-                        var device = DeviceModel(c: dev, receiverIndex: i)
+                        let rKind = ReceiverKind(byte: rinfo.kind)
+                        var device = DeviceModel(c: dev, receiverIndex: i, receiverKind: rKind)
                         if device.isOnline {
                             // Persist the live battery reading for future offline display.
                             if let battery = device.battery {

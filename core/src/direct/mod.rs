@@ -1,20 +1,22 @@
 // Direct (Bluetooth) device support.
 //
 // Logitech devices connected to the host via Bluetooth rather than through a
-// USB receiver show up as standalone HID devices. They speak HID++ 2.0 using
-// device index 0xFF (the "self" index for direct connections, same as the value
-// used to address a receiver itself on a receiver transport).
+// USB receiver show up as standalone HID devices.
 //
 // Enumeration strategy:
 //   1. List all hidapi devices with Logitech vendor ID (0x046D).
-//   2. Keep only usage_page=0xFF00 interfaces with usage != 0x0001.
-//      (Receivers use usage=0x0001; BT HID++ typically uses usage=0x0002.)
-//   3. Skip any interface whose product ID matches a known receiver PID
-//      -- some receivers expose additional HID interfaces and we must not
-//      misidentify them as direct devices.
-//   4. Open each candidate, probe HID++ 2.0 ROOT feature (single short
-//      request). If the device responds with a non-empty feature map,
-//      read name and battery. Discard non-HID++ interfaces silently.
+//   2. Keep only usage_page=0xFF00 or 0xFF43 interfaces (Logitech HID++ vendor pages).
+//      Skip any interface whose product ID matches a known receiver PID.
+//   3. Deduplicate by IOKit path -- BT devices expose multiple interfaces at the
+//      same path; deduplication avoids probing the same physical device twice.
+//   4. For each candidate, read name and kind from device_list metadata (no open
+//      needed -- these come from the HID descriptor).
+//   5. Attempt HID++ 2.0 probe to read name and battery. On macOS, BT LE HID
+//      devices are marked Privileged=Yes in IOKit and cannot be opened by
+//      third-party apps -- open_bt will fail with kIOReturnNotPermitted. Battery
+//      for BT LE devices would require CoreBluetooth GATT (Battery Service 0x180F),
+//      which is a separate implementation path. Devices are emitted with the
+//      descriptor name and kind even when the probe fails.
 //
 // Reference: reference/lib/logitech_receiver/base_usb.py (BT device detection)
 
@@ -37,17 +39,22 @@ pub struct DirectDeviceInfo {
     pub battery:    Option<Battery>,
 }
 
-/// Enumerate all directly-connected Logitech HID++ 2.0 devices (Bluetooth).
+/// Enumerate all directly-connected Logitech devices (Bluetooth).
 ///
-/// Opens each candidate interface briefly to probe for HID++ 2.0 support,
-/// then closes it. Returns only devices that successfully respond to the probe.
+/// Returns one entry per physical device. Name and kind always come from HID
+/// descriptor metadata. Battery is populated only if the HID++ 2.0 probe
+/// succeeds (possible for Classic BT devices; blocked for BT LE on macOS).
 pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
-    // Collect candidate (path, product_id, serial) tuples up front to avoid
-    // holding the device_list iterator while also calling api methods below.
+    // Logitech uses two vendor usage pages for HID++:
+    //   0xFF00 -- USB receivers and some older BT devices
+    //   0xFF43 -- Bluetooth HID++ (e.g. MX Anywhere3SB, MX Keys via BT)
+    // BT devices expose multiple interfaces at the same IOKit path; deduplicate
+    // so we probe each physical device once.
+    let mut seen_paths = std::collections::HashSet::new();
     let candidates: Vec<(String, u16, String)> = api
         .device_list()
         .filter(|d| d.vendor_id() == LOGITECH_VID)
-        .filter(|d| d.usage_page() == 0xFF00 && d.usage() != 0x0001)
+        .filter(|d| d.usage_page() == 0xFF00 || d.usage_page() == 0xFF43)
         .filter(|d| !RECEIVER_PIDS.contains(&d.product_id()))
         .map(|d| {
             let path   = d.path().to_string_lossy().into_owned();
@@ -55,30 +62,54 @@ pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
             let serial = d.serial_number().unwrap_or("").to_owned();
             (path, pid, serial)
         })
+        .filter(|(path, _, _)| seen_paths.insert(path.clone()))
         .collect();
 
     let mut result = Vec::new();
 
     for (path, product_id, serial) in candidates {
+        // Name and kind from descriptor metadata -- available without opening the device.
+        let name_from_descriptor: String = api
+            .device_list()
+            .find(|d| d.vendor_id() == LOGITECH_VID && d.product_id() == product_id)
+            .and_then(|d| d.product_string())
+            .map(|s| s.to_owned())
+            .unwrap_or_else(|| format!("Logitech Device {:04X}", product_id));
+
+        let kind = api
+            .device_list()
+            .filter(|d| d.vendor_id() == LOGITECH_VID && d.product_id() == product_id)
+            .filter(|d| d.usage_page() == 0x0001)
+            .find_map(|d| kind_from_generic_desktop_usage(d.usage()))
+            .unwrap_or(DeviceKind::Unknown);
+
+        // Attempt HID++ 2.0 probe for name and battery. On macOS, BT LE devices are
+        // marked Privileged=Yes and the open will fail -- emit with descriptor info only.
         let transport = match Transport::open(api, &path) {
             Ok(t)  => t,
-            Err(_) => continue,
+            Err(_) => {
+                result.push(DirectDeviceInfo {
+                    product_id, name: name_from_descriptor, serial, kind, battery: None,
+                });
+                continue;
+            }
         };
 
-        // Probe HID++ 2.0 at device index 0xFF (direct self-index).
-        // discover_features returns an empty map for HID++ 1.0 and non-HID++ devices.
         let features = match hidpp20::discover_features(&transport, RECEIVER_DEVICE) {
             Ok(f) if !f.is_empty() => f,
-            _                       => continue,
+            _ => {
+                result.push(DirectDeviceInfo {
+                    product_id, name: name_from_descriptor, serial, kind, battery: None,
+                });
+                continue;
+            }
         };
 
-        // Device name: feature 0x0005 if present, else a placeholder.
         let name = hidpp20::get_device_name(&transport, RECEIVER_DEVICE, &features)
             .ok()
             .flatten()
-            .unwrap_or_else(|| format!("Logitech Device {:04X}", product_id));
+            .unwrap_or(name_from_descriptor);
 
-        // Battery: try unified (0x1004), then status (0x1000), then voltage (0x1001).
         let battery = hidpp20::get_unified_battery(&transport, RECEIVER_DEVICE, &features)
             .ok()
             .flatten()
@@ -92,16 +123,6 @@ pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
                     .ok()
                     .flatten()
             });
-
-        // Infer device kind from a sibling generic-HID interface for the same PID.
-        // The 0xFF00 interface does not carry usage semantics for the device type;
-        // the 0x0001 (Generic Desktop) interface does via its usage value.
-        let kind = api
-            .device_list()
-            .filter(|d| d.vendor_id() == LOGITECH_VID && d.product_id() == product_id)
-            .filter(|d| d.usage_page() == 0x0001)
-            .find_map(|d| kind_from_generic_desktop_usage(d.usage()))
-            .unwrap_or(DeviceKind::Unknown);
 
         result.push(DirectDeviceInfo { product_id, name, serial, kind, battery });
     }

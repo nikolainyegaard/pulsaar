@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // Sidebar selection: a receiver row, a receiver-hosted device row, or a direct BT device row.
 enum SidebarItem: Hashable {
@@ -172,14 +173,77 @@ struct DeviceSidebarRow: View {
         }
         .opacity(device.isOnline ? 1.0 : 0.45)
     }
+}
 
-    private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
-        if battery.isCached { return .secondary }
-        if battery.status?.isCharging == true { return .green }
-        guard let level = battery.level else { return .secondary }
-        if level <= 10 { return .red }
-        if level <= 25 { return .orange }
-        return .secondary
+// MARK: - Shared battery color helpers
+
+private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
+    if battery.isCached { return .secondary }
+    if battery.status?.isCharging == true { return .green }
+    guard let level = battery.level else { return .secondary }
+    if level <= 10 { return .red }
+    if level <= 25 { return .orange }
+    return .secondary
+}
+
+private func batteryColor(_ battery: BatteryModel) -> Color {
+    if battery.isCached { return .secondary }
+    if battery.status?.isCharging == true { return .green }
+    guard let level = battery.level else { return .secondary }
+    if level <= 10 { return .red }
+    if level <= 25 { return .orange }
+    return .primary
+}
+
+// MARK: - Shared device detail components
+
+private struct DeviceHeader: View {
+    let name: String
+    let kindImage: String
+    let isOnline: Bool
+    let battery: BatteryModel?
+
+    var body: some View {
+        HStack(spacing: 20) {
+            Image(systemName: kindImage)
+                .font(.system(size: 44))
+                .foregroundStyle(isOnline ? .primary : .secondary)
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(name)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(isOnline ? Color.green : Color.secondary)
+                        .frame(width: 8, height: 8)
+                    Text(isOnline ? "Online" : "Offline")
+                        .font(.subheadline)
+                        .foregroundStyle(isOnline ? .primary : .secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let battery {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Image(systemName: battery.batterySystemImage)
+                        .font(.system(size: 28))
+                        .foregroundStyle(batteryColor(battery))
+                        .frame(height: 28)
+                    Text(battery.levelText)
+                        .font(.headline)
+                        .foregroundStyle(batteryColor(battery))
+                }
+                .frame(minWidth: 56, alignment: .trailing)
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
     }
 }
 
@@ -188,16 +252,33 @@ struct DeviceSidebarRow: View {
 struct DeviceDetailView: View {
     let device: DeviceModel
     @Environment(ReceiverStore.self) private var store
+    @State private var showingInfo = false
     @State private var showingUnpairConfirm = false
     @State private var unpairFailed = false
 
     var body: some View {
         VStack(spacing: 0) {
-            deviceHeader
+            DeviceHeader(
+                name: device.name,
+                kindImage: device.kind.systemImage,
+                isOnline: device.isOnline,
+                battery: device.battery
+            )
             Divider()
-            deviceProperties
+            ContentUnavailableView("Settings coming soon", systemImage: "slider.horizontal.3")
         }
         .navigationTitle(device.name)
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingInfo = true } label: {
+                    Label("Device info", systemImage: "info.circle")
+                }
+            }
+        }
+        .sheet(isPresented: $showingInfo) {
+            DeviceInfoSheet(device: device, showingUnpairConfirm: $showingUnpairConfirm)
+                .frame(minWidth: 340, minHeight: 300)
+        }
         .confirmationDialog(
             "Unpair \(device.name)?",
             isPresented: $showingUnpairConfirm,
@@ -218,55 +299,14 @@ struct DeviceDetailView: View {
             Text("The receiver did not acknowledge the unpair request.")
         }
     }
+}
 
-    private var deviceHeader: some View {
-        HStack(spacing: 20) {
-            Image(systemName: device.kind.systemImage)
-                .font(.system(size: 44))
-                .foregroundStyle(device.isOnline ? .primary : .secondary)
-                .frame(width: 56, height: 56)
+private struct DeviceInfoSheet: View {
+    let device: DeviceModel
+    @Binding var showingUnpairConfirm: Bool
+    @Environment(\.dismiss) private var dismiss
 
-            VStack(alignment: .leading, spacing: 6) {
-                Text(device.name)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(device.isOnline ? Color.green : Color.secondary)
-                        .frame(width: 8, height: 8)
-                    Text(device.isOnline ? "Online" : "Offline")
-                        .font(.subheadline)
-                        .foregroundStyle(device.isOnline ? .primary : .secondary)
-                }
-            }
-
-            Spacer()
-
-            if let battery = device.battery {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Image(systemName: battery.batterySystemImage)
-                        .font(.system(size: 28))
-                        .foregroundStyle(batteryColor(battery))
-                        .frame(height: 28)
-                    Text(battery.levelText)
-                        .font(.headline)
-                        .foregroundStyle(batteryColor(battery))
-                    if battery.isCached {
-                        Text("Last seen")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary)
-    }
-
-    @ViewBuilder
-    private var deviceProperties: some View {
+    var body: some View {
         List {
             if let battery = device.battery {
                 Section(battery.isCached ? "Battery (last seen)" : "Battery") {
@@ -279,17 +319,18 @@ struct DeviceDetailView: View {
                     }
                 }
             }
-
             Section("Device") {
                 LabeledContent("Type", value: device.kind.label)
+                LabeledContent("Connection", value: device.connectionLabel)
+                LabeledContent("Product ID", value: device.productId)
                 LabeledContent("Slot", value: "\(device.slot)")
                 if !device.serial.isEmpty {
                     LabeledContent("Serial", value: device.serial)
                 }
             }
-
             Section {
                 Button(role: .destructive) {
+                    dismiss()
                     showingUnpairConfirm = true
                 } label: {
                     Label("Unpair device", systemImage: "minus.circle")
@@ -297,15 +338,7 @@ struct DeviceDetailView: View {
                 }
             }
         }
-    }
-
-    private func batteryColor(_ battery: BatteryModel) -> Color {
-        if battery.isCached { return .secondary }
-        if battery.status?.isCharging == true { return .green }
-        guard let level = battery.level else { return .secondary }
-        if level <= 10 { return .red }
-        if level <= 25 { return .orange }
-        return .primary
+        .navigationTitle(device.name)
     }
 }
 
@@ -405,77 +438,44 @@ struct DirectDeviceSidebarRow: View {
             }
         }
     }
-
-    private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
-        if battery.isCached { return .secondary }
-        if battery.status?.isCharging == true { return .green }
-        guard let level = battery.level else { return .secondary }
-        if level <= 10 { return .red }
-        if level <= 25 { return .orange }
-        return .secondary
-    }
 }
 
 // MARK: - Direct device detail
 
 struct DirectDeviceDetailView: View {
     let device: DirectDeviceModel
+    @State private var showingInfo = false
 
     var body: some View {
         VStack(spacing: 0) {
-            deviceHeader
+            DeviceHeader(
+                name: device.name,
+                kindImage: device.kind.systemImage,
+                isOnline: device.isOnline,
+                battery: device.battery
+            )
             Divider()
-            deviceProperties
+            ContentUnavailableView("Settings coming soon", systemImage: "slider.horizontal.3")
         }
         .navigationTitle(device.name)
-    }
-
-    private var deviceHeader: some View {
-        HStack(spacing: 20) {
-            Image(systemName: device.kind.systemImage)
-                .font(.system(size: 44))
-                .frame(width: 56, height: 56)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(device.name)
-                    .font(.title2)
-                    .fontWeight(.semibold)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "bluetooth")
-                        .font(.subheadline)
-                    Text("Bluetooth")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            Spacer()
-
-            if let battery = device.battery {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Image(systemName: battery.batterySystemImage)
-                        .font(.system(size: 28))
-                        .foregroundStyle(batteryColor(battery))
-                        .frame(height: 28)
-                    Text(battery.levelText)
-                        .font(.headline)
-                        .foregroundStyle(batteryColor(battery))
-                    if battery.isCached {
-                        Text("Last seen")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button { showingInfo = true } label: {
+                    Label("Device info", systemImage: "info.circle")
                 }
             }
         }
-        .padding(20)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary)
+        .sheet(isPresented: $showingInfo) {
+            DirectDeviceInfoSheet(device: device)
+                .frame(minWidth: 340, minHeight: 300)
+        }
     }
+}
 
-    @ViewBuilder
-    private var deviceProperties: some View {
+private struct DirectDeviceInfoSheet: View {
+    let device: DirectDeviceModel
+
+    var body: some View {
         List {
             if let battery = device.battery {
                 Section(battery.isCached ? "Battery (last seen)" : "Battery") {
@@ -488,25 +488,24 @@ struct DirectDeviceDetailView: View {
                     }
                 }
             }
-
             Section("Device") {
                 LabeledContent("Type", value: device.kind.label)
-                LabeledContent("Connection", value: "Bluetooth")
+                LabeledContent("Connection", value: device.connectionLabel)
                 LabeledContent("Product ID", value: String(format: "0x%04X", device.productId))
                 if !device.serial.isEmpty {
                     LabeledContent("Serial", value: device.serial)
                 }
             }
+            Section {
+                Button {
+                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings")!)
+                } label: {
+                    Label("Unpair in Bluetooth Settings", systemImage: "arrow.up.right.square")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+            }
         }
-    }
-
-    private func batteryColor(_ battery: BatteryModel) -> Color {
-        if battery.isCached { return .secondary }
-        if battery.status?.isCharging == true { return .green }
-        guard let level = battery.level else { return .secondary }
-        if level <= 10 { return .red }
-        if level <= 25 { return .orange }
-        return .primary
+        .navigationTitle(device.name)
     }
 }
 

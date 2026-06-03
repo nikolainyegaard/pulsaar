@@ -203,16 +203,29 @@ struct DeviceModel: Identifiable {
     let kind: DeviceKind
     let name: String
     let serial: String
+    let productId: String   // wpid from receiver pairing data, formatted as 0xXXXX
+    let receiverKind: ReceiverKind
     var battery: BatteryModel? // var so DeviceCache can inject a cached value post-init
     let isOnline: Bool         // true only when a live battery read succeeded at this reload
 
-    init(c: CDeviceInfo, receiverIndex: Int) {
+    var connectionLabel: String {
+        switch receiverKind {
+        case .bolt:       return "Bolt (Encrypted)"
+        case .unifying:   return "Unifying"
+        case .lightSpeed: return "LightSpeed"
+        case .nano:       return "Nano"
+        }
+    }
+
+    init(c: CDeviceInfo, receiverIndex: Int, receiverKind: ReceiverKind) {
         id            = "\(receiverIndex)-\(c.slot)"
         self.receiverIndex = receiverIndex
         slot          = c.slot
         kind          = DeviceKind(byte: c.kind)
         name          = cBufToString(c.name)
         serial        = cBufToString(c.serial)
+        productId     = String(format: "0x%02X%02X", c.wpid.0, c.wpid.1)
+        self.receiverKind = receiverKind
         let liveBattery = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
         battery       = liveBattery
         isOnline      = liveBattery != nil
@@ -226,7 +239,8 @@ struct DirectDeviceModel: Identifiable {
     let name: String
     let serial: String
     let battery: BatteryModel?
-    let isOnline: Bool      // always true: if enumerated, the device responded to the HID++ probe
+    let isOnline: Bool      // always true: visible in device list means the device is connected
+    let connectionLabel: String = "Bluetooth"
 
     init(c: CDirectDeviceInfo) {
         let serialStr = cBufToString(c.serial)
