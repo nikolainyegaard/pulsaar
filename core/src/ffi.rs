@@ -26,6 +26,7 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
+use crate::direct::{DirectDeviceInfo, enumerate_direct_devices};
 use crate::receiver::{ReceiverHandle, ReceiverKind, Receiver, PairingSession, PairingEvent, enumerate_receivers};
 
 // ---------------------------------------------------------------------------
@@ -98,6 +99,22 @@ pub struct CBattery {
     pub level:   u8,
     pub status:  u8,
     pub voltage: u16,
+}
+
+/// Info about a directly-connected (Bluetooth) Logitech device.
+///
+/// kind:        same encoding as CDeviceInfo.kind
+/// has_battery: 0 if no battery info, 1 if the battery field is populated.
+#[repr(C)]
+pub struct CDirectDeviceInfo {
+    pub product_id:  u16,
+    pub kind:        u8,
+    /// Null-terminated device name.
+    pub name:        [u8; 64],
+    /// Null-terminated serial (from HID descriptor; may be empty).
+    pub serial:      [u8; 64],
+    pub has_battery: u8,
+    pub battery:     CBattery,
 }
 
 /// Info about a device paired to a receiver.
@@ -183,11 +200,12 @@ pub struct CDeviceConnectionEvent {
 // Opaque context types (heap-allocated; exposed as raw pointers to callers)
 // ---------------------------------------------------------------------------
 
-/// Owns the HID API instance and the receiver handle list.
+/// Owns the HID API instance, receiver handle list, and direct device list.
 /// Lives for the lifetime of the session.
 pub struct PulsaarContext {
-    api:       hidapi::HidApi,
-    receivers: Vec<ReceiverHandle>,
+    api:            hidapi::HidApi,
+    receivers:      Vec<ReceiverHandle>,
+    direct_devices: Vec<DirectDeviceInfo>,
 }
 
 /// Owns one opened receiver and the last-enumerated device list.
@@ -289,6 +307,18 @@ fn opened_receiver_to_c(r: &Receiver) -> COpenedReceiverInfo {
     }
 }
 
+fn direct_device_info_to_c(d: &DirectDeviceInfo) -> CDirectDeviceInfo {
+    let (has_battery, battery) = battery_to_c(d.battery.as_ref());
+    CDirectDeviceInfo {
+        product_id: d.product_id,
+        kind:       device_kind_to_u8(d.kind),
+        name:       str_to_buf(&d.name),
+        serial:     str_to_buf(&d.serial),
+        has_battery,
+        battery,
+    }
+}
+
 fn device_info_to_c(d: &DeviceInfo) -> CDeviceInfo {
     let (has_battery, battery) = battery_to_c(d.battery.as_ref());
     CDeviceInfo {
@@ -314,8 +344,9 @@ fn device_info_to_c(d: &DeviceInfo) -> CDeviceInfo {
 pub extern "C" fn pulsaar_init() -> *mut PulsaarContext {
     let result = catch_unwind(|| {
         crate::init().map(|api| {
-            let receivers = enumerate_receivers(&api);
-            PulsaarContext { api, receivers }
+            let receivers      = enumerate_receivers(&api);
+            let direct_devices = enumerate_direct_devices(&api);
+            PulsaarContext { api, receivers, direct_devices }
         })
     });
     match result {
@@ -336,7 +367,8 @@ pub unsafe extern "C" fn pulsaar_refresh_receivers(ctx: *mut PulsaarContext) -> 
     let ctx = &mut *ctx;
     let result = catch_unwind(AssertUnwindSafe(|| {
         ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
-        ctx.receivers = enumerate_receivers(&ctx.api);
+        ctx.receivers      = enumerate_receivers(&ctx.api);
+        ctx.direct_devices = enumerate_direct_devices(&ctx.api);
         Ok::<_, crate::error::Error>(())
     }));
     match result {
@@ -705,4 +737,59 @@ pub unsafe extern "C" fn pulsaar_close_event_listener(listener: *mut PulsaarEven
     if !listener.is_null() {
         drop(Box::from_raw(listener));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Direct (Bluetooth) device enumeration
+// ---------------------------------------------------------------------------
+
+/// Re-enumerate directly-connected (Bluetooth) Logitech devices.
+///
+/// Call this after a Bluetooth device connects or disconnects. The result is
+/// cached in the context and read via pulsaar_get_direct_device_count and
+/// pulsaar_get_direct_device_info.
+///
+/// Note: enumeration opens each candidate HID interface briefly to probe for
+/// HID++ 2.0 support, then closes it. Devices that do not respond are skipped.
+///
+/// Returns InvalidArg if ctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_refresh_direct_devices(ctx: *mut PulsaarContext) -> PulsaarStatus {
+    if ctx.is_null() { return PulsaarStatus::InvalidArg; }
+    let ctx = &mut *ctx;
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
+        ctx.direct_devices = enumerate_direct_devices(&ctx.api);
+        Ok::<_, crate::error::Error>(())
+    }));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Number of directly-connected devices found at last enumeration. Returns 0 if ctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_direct_device_count(ctx: *const PulsaarContext) -> usize {
+    if ctx.is_null() { return 0; }
+    (*ctx).direct_devices.len()
+}
+
+/// Fill `out` with info for the direct device at `index` (0-based).
+///
+/// Returns InvalidArg if ctx or out is null, or index is out of range.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_direct_device_info(
+    ctx:   *const PulsaarContext,
+    index: usize,
+    out:   *mut CDirectDeviceInfo,
+) -> PulsaarStatus {
+    if ctx.is_null() || out.is_null() { return PulsaarStatus::InvalidArg; }
+    let device = match (&(*ctx).direct_devices).get(index) {
+        Some(d) => d,
+        None    => return PulsaarStatus::InvalidArg,
+    };
+    *out = direct_device_info_to_c(device);
+    PulsaarStatus::Ok
 }

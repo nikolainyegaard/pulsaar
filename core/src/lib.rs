@@ -3,11 +3,13 @@ pub mod transport;
 pub mod hidpp;
 pub mod devices;
 pub mod receiver;
+pub mod direct;
 pub mod ffi;
 
 pub use error::{Error, Result};
 pub use devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
 pub use receiver::{ReceiverHandle, ReceiverKind, Receiver, enumerate_receivers};
+pub use direct::DirectDeviceInfo;
 
 /// Initialize the library and return a HID API instance.
 ///

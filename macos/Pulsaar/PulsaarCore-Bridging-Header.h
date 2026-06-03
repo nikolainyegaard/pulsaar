@@ -183,3 +183,31 @@ PulsaarStatus pulsaar_poll_device_event(struct PulsaarEventListenerContext *list
 
 // Close an event listener and free its context. Safe to call with null.
 void pulsaar_close_event_listener(struct PulsaarEventListenerContext *listener);
+
+// ---------------------------------------------------------------------------
+// Direct (Bluetooth) device enumeration
+// ---------------------------------------------------------------------------
+
+// Info about a directly-connected (Bluetooth) Logitech device.
+// kind: same encoding as CDeviceInfo.kind.
+// has_battery: 0 if no battery info, 1 if battery field is populated.
+typedef struct {
+    uint16_t product_id;
+    uint8_t  kind;
+    uint8_t  name[64];    // null-terminated device name
+    uint8_t  serial[64];  // null-terminated serial (from HID descriptor; may be empty)
+    uint8_t  has_battery;
+    CBattery battery;
+} CDirectDeviceInfo;
+
+// Re-enumerate directly-connected (Bluetooth) Logitech devices and cache the result.
+// Call this after a Bluetooth device connects or disconnects. Also refreshes the HID
+// device tree. Returns InvalidArg if ctx is null.
+PulsaarStatus pulsaar_refresh_direct_devices(struct PulsaarContext *ctx);
+
+// Number of directly-connected devices found at last enumeration. Returns 0 if ctx is null.
+size_t pulsaar_get_direct_device_count(const struct PulsaarContext *ctx);
+
+// Fill out with info for the direct device at index (0-based).
+// Returns InvalidArg if ctx or out is null, or index is out of range.
+PulsaarStatus pulsaar_get_direct_device_info(const struct PulsaarContext *ctx, size_t index, CDirectDeviceInfo *out);

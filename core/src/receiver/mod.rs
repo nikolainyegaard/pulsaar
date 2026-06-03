@@ -10,6 +10,15 @@ use crate::transport::Transport;
 
 const LOGITECH_VID: u16 = 0x046D;
 
+/// All known receiver product IDs. Exported so the direct-device enumerator can
+/// skip receiver HID interfaces that might otherwise look like BT direct devices.
+pub const RECEIVER_PIDS: &[u16] = &[
+    0xC548, // Bolt
+    0xC52B, 0xC532, // Unifying
+    0xC52F, 0xC521, 0xC525, 0xC526, 0xC52E, 0xC531, 0xC534, 0xC535, 0xC537, // Nano
+    0xC539, 0xC53A, 0xC53D, 0xC53F, 0xC541, 0xC545, 0xC547, 0xC54D, // LightSpeed
+];
+
 /// All known receiver product IDs with their kind and display name.
 const RECEIVERS: &[(u16, ReceiverKind, &str)] = &[
     // Bolt
