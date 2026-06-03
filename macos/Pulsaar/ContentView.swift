@@ -205,6 +205,7 @@ struct DeviceDetailView: View {
                     Image(systemName: battery.batterySystemImage)
                         .font(.system(size: 28))
                         .foregroundStyle(batteryColor(battery))
+                        .frame(height: 28)
                     Text(battery.levelText)
                         .font(.headline)
                         .foregroundStyle(batteryColor(battery))
