@@ -31,6 +31,26 @@ final class ReceiverStore {
         }
     }
 
+    // Open the receiver for a device, run a closure with the context, then close it.
+    // Returns false if the receiver cannot be opened.
+    private func withReceiverContext(for receiverIndex: Int, _ body: (OpaquePointer) -> Bool) -> Bool {
+        guard let ctx else { return false }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, receiverIndex, &openStatus) else { return false }
+        defer { pulsaar_close_receiver(rctx) }
+        return body(rctx)
+    }
+
+    // Unpair a device from its receiver, then reload.
+    // Returns true on success.
+    func unpair(device: DeviceModel) -> Bool {
+        let ok = withReceiverContext(for: device.receiverIndex) { rctx in
+            pulsaar_unpair_device(rctx, device.slot) == PulsaarStatusOk
+        }
+        if ok { reload() }
+        return ok
+    }
+
     func reload() {
         guard let ctx else { return }
         isLoading = true

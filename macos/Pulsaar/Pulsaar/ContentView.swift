@@ -146,6 +146,9 @@ struct DeviceSidebarRow: View {
 
 struct DeviceDetailView: View {
     let device: DeviceModel
+    @Environment(ReceiverStore.self) private var store
+    @State private var showingUnpairConfirm = false
+    @State private var unpairFailed = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -154,6 +157,25 @@ struct DeviceDetailView: View {
             deviceProperties
         }
         .navigationTitle(device.name)
+        .confirmationDialog(
+            "Unpair \(device.name)?",
+            isPresented: $showingUnpairConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Unpair", role: .destructive) {
+                if !store.unpair(device: device) {
+                    unpairFailed = true
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The device will be removed from this receiver. You can pair it again later.")
+        }
+        .alert("Unpair failed", isPresented: $unpairFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("The receiver did not acknowledge the unpair request.")
+        }
     }
 
     private var deviceHeader: some View {
@@ -216,6 +238,15 @@ struct DeviceDetailView: View {
                 LabeledContent("Slot", value: "\(device.slot)")
                 if !device.serial.isEmpty {
                     LabeledContent("Serial", value: device.serial)
+                }
+            }
+
+            Section {
+                Button(role: .destructive) {
+                    showingUnpairConfirm = true
+                } label: {
+                    Label("Unpair device", systemImage: "minus.circle")
+                        .frame(maxWidth: .infinity, alignment: .center)
                 }
             }
         }

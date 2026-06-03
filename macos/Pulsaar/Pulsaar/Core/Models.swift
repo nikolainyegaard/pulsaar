@@ -167,6 +167,7 @@ struct BatteryModel {
 
 struct DeviceModel: Identifiable {
     let id: String          // "receiverIndex-slot", stable across reloads
+    let receiverIndex: Int
     let slot: UInt8
     let kind: DeviceKind
     let name: String
@@ -179,12 +180,13 @@ struct DeviceModel: Identifiable {
     var isOnline: Bool { battery != nil }
 
     init(c: CDeviceInfo, receiverIndex: Int) {
-        id     = "\(receiverIndex)-\(c.slot)"
-        slot   = c.slot
-        kind   = DeviceKind(byte: c.kind)
-        name   = cBufToString(c.name)
-        serial = cBufToString(c.serial)
-        battery = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
+        id            = "\(receiverIndex)-\(c.slot)"
+        self.receiverIndex = receiverIndex
+        slot          = c.slot
+        kind          = DeviceKind(byte: c.kind)
+        name          = cBufToString(c.name)
+        serial        = cBufToString(c.serial)
+        battery       = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
     }
 }
 
