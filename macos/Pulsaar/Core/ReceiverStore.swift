@@ -6,6 +6,16 @@
 
 import Foundation
 
+// Tracks which stage the pairing sheet is in.
+enum PairingStage: Equatable {
+    case idle
+    case waiting
+    case deviceFound
+    case passkey
+    case paired
+    case failed
+}
+
 @Observable
 final class ReceiverStore {
     var receivers: [ReceiverModel] = []
@@ -15,6 +25,22 @@ final class ReceiverStore {
     // OpaquePointer because PulsaarContext is a forward-declared (incomplete) C struct.
     // @ObservationIgnored because this pointer never needs to trigger SwiftUI updates.
     @ObservationIgnored private var ctx: OpaquePointer? = nil
+
+    // ---------------------------------------------------------------------------
+    // Pairing state (drives PairingSheetView)
+    // ---------------------------------------------------------------------------
+
+    var pairingStage: PairingStage = .idle
+    var pairingDeviceName: String = ""
+    var pairingPasskey: String = ""
+    var pairingPasskeyIsNumeric: Bool = true
+    var pairingNewSlot: UInt8 = 0
+    var pairingError: String = ""
+
+    @ObservationIgnored private var pairingRctx: OpaquePointer? = nil
+    @ObservationIgnored private var pairingTimer: Timer? = nil
+
+    var isPairing: Bool { pairingStage != .idle }
 
     init() {
         ctx = pulsaar_init()
@@ -26,6 +52,12 @@ final class ReceiverStore {
     }
 
     deinit {
+        // Direct cleanup to avoid touching @Observable properties in deinit.
+        pairingTimer?.invalidate()
+        if let rctx = pairingRctx {
+            pulsaar_cancel_pairing(rctx)
+            pulsaar_close_receiver(rctx)
+        }
         if let ctx {
             pulsaar_destroy(ctx)
         }
@@ -40,6 +72,134 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         return body(rctx)
     }
+
+    // ---------------------------------------------------------------------------
+    // Pairing
+    // ---------------------------------------------------------------------------
+
+    // Open the receiver and begin the pairing lock/discovery sequence.
+    // The pairing sheet should call this in its onAppear.
+    func startPairing(receiverIndex: Int, timeoutSecs: UInt8 = 30) {
+        guard let ctx else { return }
+        cleanupPairingResources()
+
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, receiverIndex, &openStatus) else {
+            pairingError = "Could not open receiver"
+            pairingStage = .failed
+            return
+        }
+        pairingRctx = rctx
+
+        guard pulsaar_start_pairing(rctx, timeoutSecs) == PulsaarStatusOk else {
+            pairingError = "Could not start pairing"
+            pairingStage = .failed
+            pulsaar_close_receiver(rctx)
+            pairingRctx = nil
+            return
+        }
+
+        pairingStage = .waiting
+        pairingTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.doPollPairing()
+        }
+    }
+
+    private func doPollPairing() {
+        guard let rctx = pairingRctx else { return }
+        var status = CPairingStatus()
+        guard pulsaar_poll_pairing(rctx, 0, &status) == PulsaarStatusOk else { return }
+
+        switch status.state {
+        case PulsaarPairingStateWaiting, PulsaarPairingStateIdle:
+            break  // no event yet; keep waiting
+
+        case PulsaarPairingStateDeviceFound:
+            pairingDeviceName = cBufToString(status.device_name)
+            pairingStage = .deviceFound
+
+        case PulsaarPairingStatePasskeyNumeric:
+            pairingPasskey = cBufToString(status.passkey)
+            pairingPasskeyIsNumeric = true
+            pairingStage = .passkey
+
+        case PulsaarPairingStatePasskeyButton:
+            pairingPasskey = cBufToString(status.passkey)
+            pairingPasskeyIsNumeric = false
+            pairingStage = .passkey
+
+        case PulsaarPairingStatePaired:
+            // device_name[0] carries the 1-based slot; actual name is in pairingDeviceName
+            // from the earlier DeviceFound event (Bolt only; Unifying skips that step).
+            pairingNewSlot = status.device_name.0
+            pairingStage = .paired
+            stopPairingTimer()
+            // Give the sheet 1.5 s to show the success state, then close the rctx and reload.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                self?.finalizePairing()
+            }
+
+        case PulsaarPairingStateFailed:
+            pairingError = cBufToString(status.error)
+            pairingStage = .failed
+            stopPairingTimer()
+
+        default:
+            break
+        }
+    }
+
+    // Cancel an in-progress pairing (from the Cancel button or sheet onDismiss).
+    // Safe to call in any state; no-op when not pairing.
+    func cancelPairing() {
+        if let rctx = pairingRctx {
+            pulsaar_cancel_pairing(rctx)
+        }
+        cleanupPairing()
+    }
+
+    // Reset pairing state to idle without cancelling (call after successful pair + sheet dismiss).
+    func resetPairing() {
+        cleanupPairing()
+    }
+
+    private func finalizePairing() {
+        closePairingRctx()
+        reload()
+    }
+
+    // Full teardown: stop timer, close rctx, reset all state vars.
+    private func cleanupPairing() {
+        stopPairingTimer()
+        closePairingRctx()
+        pairingStage = .idle
+        pairingDeviceName = ""
+        pairingPasskey = ""
+        pairingError = ""
+        pairingNewSlot = 0
+    }
+
+    // Teardown without resetting state vars (used in deinit and cleanupPairing).
+    private func cleanupPairingResources() {
+        stopPairingTimer()
+        closePairingRctx()
+    }
+
+    private func stopPairingTimer() {
+        pairingTimer?.invalidate()
+        pairingTimer = nil
+    }
+
+    private func closePairingRctx() {
+        if let rctx = pairingRctx {
+            pulsaar_close_receiver(rctx)
+            pairingRctx = nil
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // Unpair
+    // ---------------------------------------------------------------------------
 
     // Unpair a device from its receiver, then reload.
     // Returns true on success.

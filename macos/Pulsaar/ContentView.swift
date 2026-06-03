@@ -24,7 +24,7 @@ struct ContentView: View {
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                 }
-                .disabled(store.isLoading)
+                .disabled(store.isLoading || store.isPairing)
             }
         }
     }
@@ -265,6 +265,8 @@ struct DeviceDetailView: View {
 
 struct ReceiverDetailView: View {
     let receiver: ReceiverModel
+    @Environment(ReceiverStore.self) private var store
+    @State private var showingPairingSheet = false
 
     var body: some View {
         List {
@@ -293,8 +295,34 @@ struct ReceiverDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+
+            let canPair = receiver.devices.count < Int(receiver.maxDevices)
+            Section {
+                Button {
+                    showingPairingSheet = true
+                } label: {
+                    Label("Pair new device", systemImage: "plus.circle")
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .disabled(!canPair)
+                if !canPair {
+                    Text("All \(receiver.maxDevices) slots are in use. Unpair a device first.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
         .navigationTitle(receiver.name)
+        .sheet(isPresented: $showingPairingSheet, onDismiss: {
+            // Sheet dismissed by any means: clean up pairing state.
+            if store.pairingStage == .paired {
+                store.resetPairing()
+            } else {
+                store.cancelPairing()
+            }
+        }) {
+            PairingSheetView(receiver: receiver)
+        }
     }
 }
 

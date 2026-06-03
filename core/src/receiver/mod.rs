@@ -339,32 +339,35 @@ impl Receiver {
                     Ok(PairingEvent::Waiting)
                 }
                 NOTIF_PASSKEY_REQUEST => {
-                    // params[0..6] = passkey as ASCII digits or a button bitmask string.
+                    // params[0..6] = passkey as an ASCII decimal string (e.g. "048" or "512").
+                    // Keyboards (auth bit 0 set) display it directly; other devices interpret
+                    // the integer as a 10-bit L/R button sequence.
                     let raw = &params[..6.min(params.len())];
                     let passkey = String::from_utf8_lossy(raw).trim_end_matches('\0').to_owned();
                     session.passkey = Some(passkey.clone());
-                    // Determine keyboard vs button passkey by authentication flags.
-                    // authentication bit 0 = requires numeric passkey.
                     let auth = session.bolt_discovered.as_ref().map(|d| d.authentication).unwrap_or(0);
                     if auth & 0x01 != 0 {
                         Ok(PairingEvent::PasskeyNumeric(passkey))
                     } else {
-                        // Encode button bitmask as L/R string: each bit 1=right, 0=left.
-                        let buttons = passkey_to_buttons(raw);
-                        Ok(PairingEvent::PasskeyButton(buttons))
+                        Ok(PairingEvent::PasskeyButton(passkey_to_buttons(&passkey)))
                     }
                 }
                 NOTIF_PAIRING_STATUS => {
-                    // address 0x00: lock open; 0x01: lock closed no device; 0x02: paired.
-                    let error = params.first().copied().unwrap_or(0);
-                    if error != 0 {
-                        return Ok(PairingEvent::Failed(format!("pairing error 0x{:02X}", error)));
+                    // address: 0x00=lock open (still pairing), 0x02=paired, other=lock closed.
+                    // data[0] (params[0]): 0=no error, 1=timeout, 2=failed.
+                    // On success: address=0x02, data[0]=0x00, slot at data[7].
+                    let pair_error = params.first().copied().unwrap_or(0);
+                    if pair_error != 0 {
+                        return Ok(PairingEvent::Failed(format!("pairing error 0x{:02X}", pair_error)));
                     }
-                    if address == 0x02 {
-                        let slot = params.get(7).copied().unwrap_or(0);
-                        return Ok(PairingEvent::Paired(slot));
+                    match address {
+                        0x00 => Ok(PairingEvent::Waiting),
+                        0x02 => {
+                            let slot = params.get(7).copied().unwrap_or(0);
+                            Ok(PairingEvent::Paired(slot))
+                        }
+                        _ => Ok(PairingEvent::Failed("pairing lock closed without a new device".to_owned())),
                     }
-                    Ok(PairingEvent::Waiting)
                 }
                 _ => Ok(PairingEvent::Waiting),
             }
@@ -407,16 +410,15 @@ impl Receiver {
     }
 }
 
-/// Convert a Bolt button-passkey byte slice to an L/R string.
-/// Each bit: 1=right, 0=left. First bit is MSB of first byte.
-/// Solaar uses 10 bits, so we produce 10 characters.
-fn passkey_to_buttons(raw: &[u8]) -> String {
-    let mut bits = Vec::with_capacity(10);
-    'outer: for byte in raw {
-        for shift in (0..8u8).rev() {
-            bits.push(if byte & (1 << shift) != 0 { 'R' } else { 'L' });
-            if bits.len() == 10 { break 'outer; }
-        }
-    }
-    bits.iter().collect()
+/// Convert a Bolt button-passkey string to an L/R sequence.
+///
+/// The receiver sends the passkey as an ASCII decimal string (e.g. "048").
+/// Parse it as a u32, then read the 10 least-significant bits MSB-first:
+/// bit=1 -> 'R' (right button), bit=0 -> 'L' (left button).
+///
+/// This matches Solaar's conversion: int(passkey_str) formatted as `{:010b}`,
+/// where '1'=right and '0'=left.
+fn passkey_to_buttons(passkey_str: &str) -> String {
+    let n: u32 = passkey_str.trim_end_matches('\0').parse().unwrap_or(0);
+    (0..10).rev().map(|i| if (n >> i) & 1 != 0 { 'R' } else { 'L' }).collect()
 }
