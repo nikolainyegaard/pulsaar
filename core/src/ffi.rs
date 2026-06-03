@@ -203,9 +203,13 @@ pub struct CDeviceConnectionEvent {
 /// Owns the HID API instance, receiver handle list, and direct device list.
 /// Lives for the lifetime of the session.
 pub struct PulsaarContext {
-    api:            hidapi::HidApi,
-    receivers:      Vec<ReceiverHandle>,
-    direct_devices: Vec<DirectDeviceInfo>,
+    api:                  hidapi::HidApi,
+    receivers:            Vec<ReceiverHandle>,
+    direct_devices:       Vec<DirectDeviceInfo>,
+    /// Paths where Transport::open previously failed (e.g. Privileged=Yes BT LE
+    /// devices). Skipped in future enumerate_direct_devices calls so the OS TCC
+    /// deny is triggered at most once per path per session.
+    unprobeable_bt_paths: std::collections::HashSet<String>,
 }
 
 /// Owns one opened receiver and the last-enumerated device list.
@@ -344,9 +348,10 @@ fn device_info_to_c(d: &DeviceInfo) -> CDeviceInfo {
 pub extern "C" fn pulsaar_init() -> *mut PulsaarContext {
     let result = catch_unwind(|| {
         crate::init().map(|api| {
-            let receivers      = enumerate_receivers(&api);
-            let direct_devices = enumerate_direct_devices(&api);
-            PulsaarContext { api, receivers, direct_devices }
+            let receivers                    = enumerate_receivers(&api);
+            let mut unprobeable_bt_paths     = std::collections::HashSet::new();
+            let direct_devices               = enumerate_direct_devices(&api, &mut unprobeable_bt_paths);
+            PulsaarContext { api, receivers, direct_devices, unprobeable_bt_paths }
         })
     });
     match result {
@@ -368,7 +373,7 @@ pub unsafe extern "C" fn pulsaar_refresh_receivers(ctx: *mut PulsaarContext) -> 
     let result = catch_unwind(AssertUnwindSafe(|| {
         ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
         ctx.receivers      = enumerate_receivers(&ctx.api);
-        ctx.direct_devices = enumerate_direct_devices(&ctx.api);
+        ctx.direct_devices = enumerate_direct_devices(&ctx.api, &mut ctx.unprobeable_bt_paths);
         Ok::<_, crate::error::Error>(())
     }));
     match result {
@@ -759,7 +764,7 @@ pub unsafe extern "C" fn pulsaar_refresh_direct_devices(ctx: *mut PulsaarContext
     let ctx = &mut *ctx;
     let result = catch_unwind(AssertUnwindSafe(|| {
         ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
-        ctx.direct_devices = enumerate_direct_devices(&ctx.api);
+        ctx.direct_devices = enumerate_direct_devices(&ctx.api, &mut ctx.unprobeable_bt_paths);
         Ok::<_, crate::error::Error>(())
     }));
     match result {

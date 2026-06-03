@@ -44,7 +44,14 @@ pub struct DirectDeviceInfo {
 /// Returns one entry per physical device. Name and kind always come from HID
 /// descriptor metadata. Battery is populated only if the HID++ 2.0 probe
 /// succeeds (possible for Classic BT devices; blocked for BT LE on macOS).
-pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
+///
+/// `unprobeable`: paths where open previously failed (e.g. Privileged=Yes BT LE
+/// devices on macOS). Paths are skipped on input and added on new failures, so
+/// the OS TCC deny is triggered at most once per path per session.
+pub fn enumerate_direct_devices(
+    api:         &HidApi,
+    unprobeable: &mut std::collections::HashSet<String>,
+) -> Vec<DirectDeviceInfo> {
     // Logitech uses two vendor usage pages for HID++:
     //   0xFF00 -- USB receivers and some older BT devices
     //   0xFF43 -- Bluetooth HID++ (e.g. MX Anywhere3SB, MX Keys via BT)
@@ -63,6 +70,7 @@ pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
             (path, pid, serial)
         })
         .filter(|(path, _, _)| seen_paths.insert(path.clone()))
+        .filter(|(path, _, _)| !unprobeable.contains(path))
         .collect();
 
     let mut result = Vec::new();
@@ -88,6 +96,7 @@ pub fn enumerate_direct_devices(api: &HidApi) -> Vec<DirectDeviceInfo> {
         let transport = match Transport::open(api, &path) {
             Ok(t)  => t,
             Err(_) => {
+                unprobeable.insert(path);
                 result.push(DirectDeviceInfo {
                     product_id, name: name_from_descriptor, serial, kind, battery: None,
                 });
