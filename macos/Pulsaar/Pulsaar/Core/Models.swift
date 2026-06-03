@@ -86,12 +86,15 @@ enum DeviceKind {
 
     var systemImage: String {
         switch self {
-        case .keyboard: return "keyboard"
-        case .mouse: return "computermouse"
+        case .keyboard, .numpad: return "keyboard"
+        case .mouse, .trackball: return "computermouse.fill"
         case .headset: return "headphones"
-        case .gamepad, .joystick: return "gamecontroller"
-        case .trackball, .touchpad: return "hand.point.up.left"
-        default: return "dot.radiowaves.left.and.right"
+        case .gamepad, .joystick: return "gamecontroller.fill"
+        case .touchpad: return "hand.point.up.left.fill"
+        case .presenter, .remote, .remoteControl: return "tv.remote.fill"
+        case .tablet: return "pencil.and.scribble"
+        case .receiver: return "antenna.radiowaves.left.and.right"
+        default: return "questionmark.circle"
         }
     }
 }
@@ -169,6 +172,11 @@ struct DeviceModel: Identifiable {
     let name: String
     let serial: String
     let battery: BatteryModel?
+
+    // A device is considered online when battery info was successfully read.
+    // For wireless devices, HID++ feature calls only succeed when connected,
+    // so battery presence is a reliable proxy for connection state.
+    var isOnline: Bool { battery != nil }
 
     init(c: CDeviceInfo, receiverIndex: Int) {
         id     = "\(receiverIndex)-\(c.slot)"

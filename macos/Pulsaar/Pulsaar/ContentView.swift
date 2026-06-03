@@ -1,14 +1,21 @@
 import SwiftUI
 
+// Sidebar selection: a receiver row or a device row.
+enum SidebarItem: Hashable {
+    case receiver(Int)
+    case device(String)  // device.id ("receiverIndex-slot")
+}
+
 struct ContentView: View {
     @Environment(ReceiverStore.self) private var store
-    @State private var selectedReceiverId: Int? = nil
+    @State private var selection: SidebarItem? = nil
 
     var body: some View {
         NavigationSplitView {
             sidebar
+                .navigationSplitViewColumnWidth(min: 200, ideal: 240)
         } detail: {
-            detail
+            detailPane
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -22,61 +29,208 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Sidebar
+
     @ViewBuilder
     private var sidebar: some View {
-        List(store.receivers, selection: $selectedReceiverId) { receiver in
-            ReceiverRow(receiver: receiver)
-                .tag(receiver.id)
-        }
-        .navigationTitle("Pulsaar")
-        .overlay {
+        List(selection: $selection) {
             if store.isLoading {
-                ProgressView()
+                Label("Scanning...", systemImage: "arrow.clockwise")
+                    .foregroundStyle(.secondary)
             } else if let error = store.errorMessage {
-                ContentUnavailableView(error, systemImage: "exclamationmark.triangle")
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.secondary)
             } else if store.receivers.isEmpty {
-                ContentUnavailableView("No receivers found", systemImage: "antenna.radiowaves.left.and.right")
+                Label("No receivers found", systemImage: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(.secondary)
+            } else {
+                ForEach(store.receivers) { receiver in
+                    // Receiver as a top-level selectable row.
+                    ReceiverSidebarRow(receiver: receiver)
+                        .tag(SidebarItem.receiver(receiver.id))
+
+                    // Devices indented beneath their receiver.
+                    ForEach(receiver.devices) { device in
+                        DeviceSidebarRow(device: device)
+                            .tag(SidebarItem.device(device.id))
+                            .listRowInsets(EdgeInsets(top: 3, leading: 44, bottom: 3, trailing: 8))
+                    }
+                }
+            }
+        }
+        .listStyle(.sidebar)
+        .navigationTitle("Pulsaar")
+    }
+
+    // MARK: - Detail pane
+
+    @ViewBuilder
+    private var detailPane: some View {
+        switch selection {
+        case .device(let id):
+            if let device = findDevice(id: id) {
+                DeviceDetailView(device: device)
+            } else {
+                emptyState
+            }
+        case .receiver(let id):
+            if let receiver = store.receivers.first(where: { $0.id == id }) {
+                ReceiverDetailView(receiver: receiver)
+            } else {
+                emptyState
+            }
+        case nil:
+            emptyState
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView(
+            "Select a device",
+            systemImage: "dot.radiowaves.left.and.right",
+            description: Text("Choose a device from the list to see its details.")
+        )
+    }
+
+    private func findDevice(id: String) -> DeviceModel? {
+        store.receivers.flatMap(\.devices).first { $0.id == id }
+    }
+}
+
+// MARK: - Receiver sidebar row
+
+struct ReceiverSidebarRow: View {
+    let receiver: ReceiverModel
+
+    var body: some View {
+        Label {
+            Text(receiver.name)
+                .fontWeight(.medium)
+        } icon: {
+            Image(systemName: "antenna.radiowaves.left.and.right")
+        }
+    }
+}
+
+// MARK: - Device sidebar row
+
+struct DeviceSidebarRow: View {
+    let device: DeviceModel
+
+    var body: some View {
+        HStack {
+            Label {
+                Text(device.name)
+            } icon: {
+                Image(systemName: device.kind.systemImage)
+                    .foregroundStyle(device.isOnline ? .primary : .secondary)
+            }
+
+            Spacer()
+
+            if let battery = device.battery {
+                HStack(spacing: 3) {
+                    Text(battery.levelText)
+                        .font(.caption2)
+                    Image(systemName: battery.batterySystemImage)
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+            }
+        }
+        .opacity(device.isOnline ? 1.0 : 0.45)
+    }
+}
+
+// MARK: - Device detail
+
+struct DeviceDetailView: View {
+    let device: DeviceModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            deviceHeader
+            Divider()
+            deviceProperties
+        }
+        .navigationTitle(device.name)
+    }
+
+    private var deviceHeader: some View {
+        HStack(spacing: 20) {
+            Image(systemName: device.kind.systemImage)
+                .font(.system(size: 44))
+                .foregroundStyle(device.isOnline ? .primary : .secondary)
+                .frame(width: 56)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(device.name)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(device.isOnline ? Color.green : Color.secondary)
+                        .frame(width: 8, height: 8)
+                    Text(device.isOnline ? "Online" : "Offline")
+                        .font(.subheadline)
+                        .foregroundStyle(device.isOnline ? .primary : .secondary)
+                }
+            }
+
+            Spacer()
+
+            if let battery = device.battery, device.isOnline {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Image(systemName: battery.batterySystemImage)
+                        .font(.system(size: 28))
+                        .foregroundStyle(batteryColor(battery))
+                    Text(battery.levelText)
+                        .font(.headline)
+                        .foregroundStyle(batteryColor(battery))
+                }
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+    }
+
+    @ViewBuilder
+    private var deviceProperties: some View {
+        List {
+            if let battery = device.battery, device.isOnline {
+                Section("Battery") {
+                    LabeledContent("Level", value: battery.levelText)
+                    if let status = battery.status {
+                        LabeledContent("Status", value: status.label)
+                    }
+                    if let voltage = battery.voltage {
+                        LabeledContent("Voltage", value: "\(voltage) mV")
+                    }
+                }
+            }
+
+            Section("Device") {
+                LabeledContent("Type", value: device.kind.label)
+                LabeledContent("Slot", value: "\(device.slot)")
+                if !device.serial.isEmpty {
+                    LabeledContent("Serial", value: device.serial)
+                }
             }
         }
     }
 
-    @ViewBuilder
-    private var detail: some View {
-        if let id = selectedReceiverId,
-           let receiver = store.receivers.first(where: { $0.id == id }) {
-            ReceiverDetailView(receiver: receiver)
-        } else {
-            ContentUnavailableView(
-                "Select a receiver",
-                systemImage: "antenna.radiowaves.left.and.right",
-                description: Text("Choose a receiver from the list to see its paired devices.")
-            )
-        }
+    private func batteryColor(_ battery: BatteryModel) -> Color {
+        if battery.status?.isCharging == true { return .green }
+        guard let level = battery.level else { return .secondary }
+        if level <= 10 { return .red }
+        if level <= 25 { return .orange }
+        return .primary
     }
 }
 
-// ---------------------------------------------------------------------------
-// Receiver sidebar row
-// ---------------------------------------------------------------------------
-
-struct ReceiverRow: View {
-    let receiver: ReceiverModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(receiver.name)
-                .font(.body)
-            Text("\(receiver.kind.label) - \(receiver.devices.count) device\(receiver.devices.count == 1 ? "" : "s")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.vertical, 2)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Receiver detail
-// ---------------------------------------------------------------------------
+// MARK: - Receiver detail
 
 struct ReceiverDetailView: View {
     let receiver: ReceiverModel
@@ -92,81 +246,24 @@ struct ReceiverDetailView: View {
             }
 
             Section("Paired devices") {
+                ForEach(receiver.devices) { device in
+                    HStack {
+                        Label(device.name, systemImage: device.kind.systemImage)
+                        Spacer()
+                        Text(device.isOnline ? "Online" : "Offline")
+                            .font(.caption)
+                            .foregroundStyle(device.isOnline ? .green : .secondary)
+                    }
+                    .opacity(device.isOnline ? 1.0 : 0.5)
+                }
+
                 if receiver.devices.isEmpty {
                     Text("No devices paired")
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(receiver.devices) { device in
-                        DeviceRow(device: device)
-                    }
                 }
             }
         }
         .navigationTitle(receiver.name)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Device row
-// ---------------------------------------------------------------------------
-
-struct DeviceRow: View {
-    let device: DeviceModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(device.name, systemImage: device.kind.systemImage)
-                .font(.body)
-
-            HStack(spacing: 12) {
-                Text("Slot \(device.slot)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                Text(device.kind.label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                if !device.serial.isEmpty {
-                    Text("S/N: \(device.serial)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-
-            if let battery = device.battery {
-                BatteryView(battery: battery)
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Battery indicator
-// ---------------------------------------------------------------------------
-
-struct BatteryView: View {
-    let battery: BatteryModel
-
-    var body: some View {
-        HStack(spacing: 4) {
-            Image(systemName: battery.batterySystemImage)
-            Text(battery.levelText)
-            if let status = battery.status {
-                Text("(\(status.label))")
-            }
-        }
-        .font(.caption)
-        .foregroundStyle(batteryColor)
-    }
-
-    private var batteryColor: Color {
-        guard let level = battery.level else { return .secondary }
-        if battery.status?.isCharging == true { return .green }
-        if level <= 10 { return .red }
-        if level <= 25 { return .orange }
-        return .secondary
     }
 }
 
