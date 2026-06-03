@@ -73,7 +73,7 @@ struct ContentView: View {
             }
         case .receiver(let id):
             if let receiver = store.receivers.first(where: { $0.id == id }) {
-                ReceiverDetailView(receiver: receiver)
+                ReceiverDetailView(receiver: receiver, selection: $selection)
             } else {
                 emptyState
             }
@@ -256,6 +256,7 @@ struct DeviceDetailView: View {
     @State private var showingInfo = false
     @State private var showingUnpairConfirm = false
     @State private var unpairFailed = false
+    @State private var containerHeight: CGFloat = 480
 
     var body: some View {
         VStack(spacing: 0) {
@@ -286,6 +287,13 @@ struct DeviceDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { containerHeight = geo.size.height }
+                    .onChange(of: geo.size) { _, new in containerHeight = new.height }
+            }
+        }
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -299,7 +307,7 @@ struct DeviceDetailView: View {
                 DeviceInfoSheet(device: device)
                     .navigationTitle(device.name)
             }
-            .frame(minWidth: 340, minHeight: 380)
+            .frame(width: 360, height: containerHeight * 0.8)
         }
         .confirmationDialog(
             "Unpair \(device.name)?",
@@ -397,6 +405,7 @@ private struct ReceiverHeader: View {
 
 struct ReceiverDetailView: View {
     let receiver: ReceiverModel
+    @Binding var selection: SidebarItem?
     @Environment(ReceiverStore.self) private var store
     @State private var showingPairingSheet = false
 
@@ -419,14 +428,22 @@ struct ReceiverDetailView: View {
                 }
                 Section("Paired devices") {
                     ForEach(receiver.devices) { device in
-                        HStack {
-                            Label(device.name, systemImage: device.kind.systemImage)
-                            Spacer()
-                            Text(device.isOnline ? "Online" : "Offline")
-                                .font(.caption)
-                                .foregroundStyle(device.isOnline ? .green : .secondary)
+                        Button {
+                            selection = .device(device.id)
+                        } label: {
+                            HStack {
+                                Label(device.name, systemImage: device.kind.systemImage)
+                                Spacer()
+                                Text(device.isOnline ? "Online" : "Offline")
+                                    .font(.caption)
+                                    .foregroundStyle(device.isOnline ? .green : .secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .opacity(device.isOnline ? 1.0 : 0.5)
                         }
-                        .opacity(device.isOnline ? 1.0 : 0.5)
+                        .buttonStyle(.plain)
                     }
                     if receiver.devices.isEmpty {
                         Text("No devices paired")
@@ -504,6 +521,7 @@ struct DirectDeviceSidebarRow: View {
 struct DirectDeviceDetailView: View {
     let device: DirectDeviceModel
     @State private var showingInfo = false
+    @State private var containerHeight: CGFloat = 480
 
     var body: some View {
         VStack(spacing: 0) {
@@ -534,6 +552,13 @@ struct DirectDeviceDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear { containerHeight = geo.size.height }
+                    .onChange(of: geo.size) { _, new in containerHeight = new.height }
+            }
+        }
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -547,7 +572,7 @@ struct DirectDeviceDetailView: View {
                 DirectDeviceInfoSheet(device: device)
                     .navigationTitle(device.name)
             }
-            .frame(minWidth: 340, minHeight: 380)
+            .frame(width: 360, height: containerHeight * 0.8)
         }
     }
 }
