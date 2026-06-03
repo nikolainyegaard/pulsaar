@@ -152,10 +152,9 @@ struct BatteryModel {
     }
 
     var batterySystemImage: String {
-        // battery.bolt is the standard SF Symbols "charging" icon (available since SF Symbols 1).
-        // Level-specific bolt variants (battery.50percent.bolt etc.) do not exist in SF Symbols.
-        // The percentage text shown alongside the icon provides the level when charging.
-        if status?.isCharging == true { return "battery.bolt" }
+        // Only battery.100percent.bolt exists in SF Symbols; use it for all charging states.
+        // The adjacent percentage text conveys the actual level when charging.
+        if status?.isCharging == true { return "battery.100percent.bolt" }
         guard let l = level else { return "battery.0percent" }
         switch l {
         case 75...: return "battery.100percent"

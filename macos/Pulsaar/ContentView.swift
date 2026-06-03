@@ -125,10 +125,18 @@ struct DeviceSidebarRow: View {
                     Image(systemName: battery.batterySystemImage)
                         .font(.caption2)
                 }
-                .foregroundStyle(.secondary)
+                .foregroundStyle(sidebarBatteryColor(battery))
             }
         }
         .opacity(device.isOnline ? 1.0 : 0.45)
+    }
+
+    private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
+        if battery.status?.isCharging == true { return .green }
+        guard let level = battery.level else { return .secondary }
+        if level <= 10 { return .red }
+        if level <= 25 { return .orange }
+        return .secondary
     }
 }
 
