@@ -9,6 +9,14 @@ struct PulsaarApp: App {
             ContentView()
                 .environment(store)
         }
+        .commands {
+            CommandMenu("Receivers") {
+                Button("Force Refresh") {
+                    store.reload()
+                }
+                .keyboardShortcut("r", modifiers: .command)
+            }
+        }
         .windowResizability(.contentMinSize)
         .defaultSize(width: 700, height: 480)
     }

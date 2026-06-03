@@ -17,16 +17,6 @@ struct ContentView: View {
         } detail: {
             detailPane
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    store.reload()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .disabled(store.isLoading || store.isPairing)
-            }
-        }
     }
 
     // MARK: - Sidebar

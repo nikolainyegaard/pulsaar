@@ -5,6 +5,7 @@
 // so Swift imports pointers to them as OpaquePointer rather than UnsafeMutablePointer<T>.
 
 import Foundation
+import IOKit.hid
 
 // Tracks which stage the pairing sheet is in.
 enum PairingStage: Equatable {
@@ -39,6 +40,7 @@ final class ReceiverStore {
 
     @ObservationIgnored private var pairingRctx: OpaquePointer? = nil
     @ObservationIgnored private var pairingTimer: Timer? = nil
+    @ObservationIgnored private var hidMonitor: IOHIDManager? = nil
 
     var isPairing: Bool { pairingStage != .idle }
 
@@ -49,10 +51,15 @@ final class ReceiverStore {
             return
         }
         reload()
+        startUSBMonitoring()
     }
 
     deinit {
         // Direct cleanup to avoid touching @Observable properties in deinit.
+        if let monitor = hidMonitor {
+            IOHIDManagerUnscheduleFromRunLoop(monitor, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+            IOHIDManagerClose(monitor, IOOptionBits(kIOHIDOptionsTypeNone))
+        }
         pairingTimer?.invalidate()
         if let rctx = pairingRctx {
             pulsaar_cancel_pairing(rctx)
@@ -61,6 +68,40 @@ final class ReceiverStore {
         if let ctx {
             pulsaar_destroy(ctx)
         }
+    }
+
+    // ---------------------------------------------------------------------------
+    // USB monitoring
+    // ---------------------------------------------------------------------------
+
+    // Watch for Logitech receiver interfaces being added or removed. Calls reload()
+    // automatically so the sidebar updates without a manual refresh.
+    private func startUSBMonitoring() {
+        let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
+
+        IOHIDManagerSetDeviceMatching(manager, [
+            kIOHIDVendorIDKey: 0x046D,
+            kIOHIDUsagePageKey: 0xFF00,
+            kIOHIDUsageKey: 0x0001,
+        ] as CFDictionary)
+
+        let ptr = Unmanaged.passUnretained(self).toOpaque()
+
+        IOHIDManagerRegisterDeviceMatchingCallback(manager, { context, _, _, _ in
+            guard let ctx = context else { return }
+            let store = Unmanaged<ReceiverStore>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async { store.reload() }
+        }, ptr)
+
+        IOHIDManagerRegisterDeviceRemovalCallback(manager, { context, _, _, _ in
+            guard let ctx = context else { return }
+            let store = Unmanaged<ReceiverStore>.fromOpaque(ctx).takeUnretainedValue()
+            DispatchQueue.main.async { store.reload() }
+        }, ptr)
+
+        IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
+        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        hidMonitor = manager
     }
 
     // Open the receiver for a device, run a closure with the context, then close it.
