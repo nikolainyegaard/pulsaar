@@ -155,3 +155,31 @@ PulsaarStatus pulsaar_poll_pairing(struct PulsaarReceiverContext *rctx, uint32_t
 // Cancel an in-progress pairing. Closes the lock / stops discovery.
 // Safe to call even if pairing is not in progress.
 PulsaarStatus pulsaar_cancel_pairing(struct PulsaarReceiverContext *rctx);
+
+// ---------------------------------------------------------------------------
+// Device connection-event monitoring
+// ---------------------------------------------------------------------------
+
+typedef enum {
+    PulsaarConnectionEventNone    = 0, // no event within timeout
+    PulsaarConnectionEventOnline  = 1, // device in slot X came online
+    PulsaarConnectionEventOffline = 2, // device in slot X went offline
+} PulsaarConnectionEvent;
+
+typedef struct {
+    PulsaarConnectionEvent event;
+    uint8_t slot; // 1-based device slot; 0 when event is None
+} CDeviceConnectionEvent;
+
+struct PulsaarEventListenerContext;
+
+// Open a receiver for connection-state monitoring. Enables wireless notifications.
+// Returns null on failure. The caller must eventually call pulsaar_close_event_listener.
+struct PulsaarEventListenerContext *pulsaar_open_event_listener(struct PulsaarContext *ctx, size_t index, PulsaarStatus *status_out);
+
+// Poll for one device connection-state event. Blocks for at most timeout_ms milliseconds.
+// out.event is None on timeout. Returns InvalidArg if listener or out is null.
+PulsaarStatus pulsaar_poll_device_event(struct PulsaarEventListenerContext *listener, uint32_t timeout_ms, CDeviceConnectionEvent *out);
+
+// Close an event listener and free its context. Safe to call with null.
+void pulsaar_close_event_listener(struct PulsaarEventListenerContext *listener);

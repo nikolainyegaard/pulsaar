@@ -157,6 +157,29 @@ pub struct CPairingStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Device connection-event types
+// ---------------------------------------------------------------------------
+
+/// Kind of device connection event returned by pulsaar_poll_device_event.
+#[repr(C)]
+pub enum PulsaarConnectionEvent {
+    /// No event received within the timeout.
+    None    = 0,
+    /// A paired device in slot X came online.
+    Online  = 1,
+    /// A paired device in slot X went offline.
+    Offline = 2,
+}
+
+/// Result of one pulsaar_poll_device_event call.
+#[repr(C)]
+pub struct CDeviceConnectionEvent {
+    pub event: PulsaarConnectionEvent,
+    /// 1-based slot of the device that changed state. 0 when event is None.
+    pub slot:  u8,
+}
+
+// ---------------------------------------------------------------------------
 // Opaque context types (heap-allocated; exposed as raw pointers to callers)
 // ---------------------------------------------------------------------------
 
@@ -173,6 +196,12 @@ pub struct PulsaarReceiverContext {
     receiver: Receiver,
     devices:  Vec<DeviceInfo>,
     pairing:  Option<PairingSession>,
+}
+
+/// Owns a receiver opened exclusively for monitoring device connection-state events.
+/// Lives between pulsaar_open_event_listener / pulsaar_close_event_listener.
+pub struct PulsaarEventListenerContext {
+    receiver: Receiver,
 }
 
 // ---------------------------------------------------------------------------
@@ -589,4 +618,91 @@ pub unsafe extern "C" fn pulsaar_cancel_pairing(
         }
     }
     PulsaarStatus::Ok
+}
+
+// ---------------------------------------------------------------------------
+// Event listener: device connection-state monitoring
+// ---------------------------------------------------------------------------
+
+/// Open a receiver for connection-state event monitoring.
+///
+/// Opens an independent HID handle for the receiver at `index` and enables
+/// wireless notifications, so the receiver sends 0x41 notifications when a
+/// paired device comes online or goes offline.
+///
+/// Returns a pointer to the listener context, or null on failure.
+/// The caller must eventually call pulsaar_close_event_listener.
+/// Returns InvalidArg if ctx is null or index is out of range.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_open_event_listener(
+    ctx:        *mut PulsaarContext,
+    index:      usize,
+    status_out: *mut PulsaarStatus,
+) -> *mut PulsaarEventListenerContext {
+    macro_rules! fail {
+        ($s:expr) => {{
+            if !status_out.is_null() { *status_out = $s; }
+            return std::ptr::null_mut();
+        }};
+    }
+
+    if ctx.is_null() { fail!(PulsaarStatus::InvalidArg); }
+
+    let handle = match (&(*ctx).receivers).get(index) {
+        Some(h) => h,
+        None    => fail!(PulsaarStatus::InvalidArg),
+    };
+
+    match Receiver::open_for_events(&(*ctx).api, handle) {
+        Ok(receiver) => {
+            if !status_out.is_null() { *status_out = PulsaarStatus::Ok; }
+            Box::into_raw(Box::new(PulsaarEventListenerContext { receiver }))
+        }
+        Err(e) => fail!(PulsaarStatus::from(e)),
+    }
+}
+
+/// Poll for one device connection-state event. Blocks for at most timeout_ms milliseconds.
+///
+/// `out` is filled with the event kind and the slot of the affected device.
+/// Returns Ok with event=None on timeout or non-connection messages.
+/// Returns InvalidArg if listener or out is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_poll_device_event(
+    listener:   *mut PulsaarEventListenerContext,
+    timeout_ms: u32,
+    out:        *mut CDeviceConnectionEvent,
+) -> PulsaarStatus {
+    if listener.is_null() || out.is_null() { return PulsaarStatus::InvalidArg; }
+    let listener = &*listener;
+
+    *out = CDeviceConnectionEvent { event: PulsaarConnectionEvent::None, slot: 0 };
+
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        listener.receiver.poll_device_event(timeout_ms as i32)
+    }));
+
+    match result {
+        Ok(Ok(Some((slot, true))))  => {
+            (*out).event = PulsaarConnectionEvent::Online;
+            (*out).slot  = slot;
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(Some((slot, false)))) => {
+            (*out).event = PulsaarConnectionEvent::Offline;
+            (*out).slot  = slot;
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None))   => PulsaarStatus::Ok,
+        Ok(Err(e))     => PulsaarStatus::from(e),
+        Err(_)         => PulsaarStatus::Unknown,
+    }
+}
+
+/// Close an event listener and free its context. Safe to call with null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_close_event_listener(listener: *mut PulsaarEventListenerContext) {
+    if !listener.is_null() {
+        drop(Box::from_raw(listener));
+    }
 }

@@ -41,6 +41,8 @@ final class ReceiverStore {
     @ObservationIgnored private var pairingRctx: OpaquePointer? = nil
     @ObservationIgnored private var pairingTimer: Timer? = nil
     @ObservationIgnored private var hidMonitor: IOHIDManager? = nil
+    @ObservationIgnored private var eventListeners: [OpaquePointer] = []
+    @ObservationIgnored private var eventTimer: Timer? = nil
 
     var isPairing: Bool { pairingStage != .idle }
 
@@ -59,6 +61,10 @@ final class ReceiverStore {
         if let monitor = hidMonitor {
             IOHIDManagerUnscheduleFromRunLoop(monitor, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
             IOHIDManagerClose(monitor, IOOptionBits(kIOHIDOptionsTypeNone))
+        }
+        eventTimer?.invalidate()
+        for listener in eventListeners {
+            pulsaar_close_event_listener(listener)
         }
         pairingTimer?.invalidate()
         if let rctx = pairingRctx {
@@ -81,8 +87,8 @@ final class ReceiverStore {
 
         IOHIDManagerSetDeviceMatching(manager, [
             kIOHIDVendorIDKey: 0x046D,
-            kIOHIDUsagePageKey: 0xFF00,
-            kIOHIDUsageKey: 0x0001,
+            "UsagePage": 0xFF00,
+            "Usage": 0x0001,
         ] as CFDictionary)
 
         let ptr = Unmanaged.passUnretained(self).toOpaque()
@@ -102,6 +108,52 @@ final class ReceiverStore {
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
         IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         hidMonitor = manager
+    }
+
+    // ---------------------------------------------------------------------------
+    // Device connection-state event listeners (one per receiver)
+    // ---------------------------------------------------------------------------
+
+    // Called at the end of every reload(). Closes old listeners, opens new ones
+    // for all currently known receivers, and (re)starts the polling timer.
+    private func restartEventListeners() {
+        stopEventTimer()
+        for listener in eventListeners {
+            pulsaar_close_event_listener(listener)
+        }
+        eventListeners.removeAll()
+
+        guard let ctx else { return }
+
+        for i in 0..<receivers.count {
+            var status = PulsaarStatusUnknown
+            if let listener = pulsaar_open_event_listener(ctx, i, &status) {
+                eventListeners.append(listener)
+            }
+        }
+
+        guard !eventListeners.isEmpty else { return }
+
+        eventTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.pollEventListeners()
+        }
+    }
+
+    private func pollEventListeners() {
+        guard !isPairing else { return } // pairing uses the same notification channel; let it run
+        for listener in eventListeners {
+            var event = CDeviceConnectionEvent()
+            pulsaar_poll_device_event(listener, 0, &event)
+            if event.event != PulsaarConnectionEventNone {
+                reload()
+                return
+            }
+        }
+    }
+
+    private func stopEventTimer() {
+        eventTimer?.invalidate()
+        eventTimer = nil
     }
 
     // Open the receiver for a device, run a closure with the context, then close it.
@@ -294,5 +346,6 @@ final class ReceiverStore {
 
         receivers = result
         isLoading = false
+        restartEventListeners()
     }
 }

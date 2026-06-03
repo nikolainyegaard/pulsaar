@@ -198,9 +198,10 @@ fn bytes_to_hex(bytes: &[u8]) -> String {
 // Pairing
 // ---------------------------------------------------------------------------
 
-// Sub-IDs for receiver pairing notifications.
+// Sub-IDs for receiver notifications.
+const NOTIF_DJ_PAIRING:           u8 = 0x41; // device connection/disconnection
 const NOTIF_PAIRING_LOCK:         u8 = 0x4A; // Unifying: lock opened/closed
-const NOTIF_DJ_PAIRING:           u8 = 0x41; // Unifying: new device connection
+const NOTIF_POWER:                u8 = 0x4B; // device powered on/off
 const NOTIF_PASSKEY_REQUEST:      u8 = 0x4D; // Bolt: passkey request
 const NOTIF_DEVICE_DISCOVERY:     u8 = 0x4F; // Bolt: device found during discovery
 const NOTIF_DISCOVERY_STATUS:     u8 = 0x53; // Bolt: discovery lock open/closed
@@ -396,6 +397,60 @@ impl Receiver {
                 }
                 _ => Ok(PairingEvent::Waiting),
             }
+        }
+    }
+
+    /// Open a receiver dedicated to monitoring device connection-state events.
+    /// Enables the WIRELESS notification flag so the receiver sends 0x41 notifications
+    /// when a paired device comes online or goes offline.
+    pub fn open_for_events(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
+        let recv = Self::open(api, handle)?;
+        if let Ok(flags) = hidpp10::get_notification_flags(&recv.transport) {
+            let needed = hidpp10::NOTIF_WIRELESS | hidpp10::NOTIF_SOFTWARE_PRESENT;
+            if flags & needed != needed {
+                let _ = hidpp10::set_notification_flags(&recv.transport, flags | needed);
+            }
+        }
+        Ok(recv)
+    }
+
+    /// Poll for one device connection-state event. Blocks for at most timeout_ms milliseconds.
+    ///
+    /// Returns Some((slot, online)) when a device comes online or goes offline.
+    /// Returns None on timeout or when the incoming message is not a connection-state notification.
+    ///
+    /// Protocol reference (matches Solaar's _process_hidpp10_notification):
+    ///   0x41 (DJ_PAIRING): params[0] & 0x40 == 0 => link established (online)
+    ///   0x4B (POWER):      address == 0x01        => device powered on (online)
+    pub fn poll_device_event(&self, timeout_ms: i32) -> Result<Option<(u8, bool)>> {
+        let msg = match self.transport.read_notification(timeout_ms)? {
+            Some(m) => m,
+            None    => return Ok(None),
+        };
+
+        let sub_id = msg.sub_id();
+        if sub_id >= 0x80 { return Ok(None); } // HID++ reply, not a notification
+
+        let slot = msg.device();
+        if slot == 0xFF || slot == 0 { return Ok(None); } // receiver-level, not a device
+
+        match sub_id {
+            NOTIF_DJ_PAIRING => {
+                // address 0x00 = unknown/legacy protocol; skip.
+                // For all other protocols: params[0] bit 6 inverted = link_established.
+                if msg.address() == 0x00 { return Ok(None); }
+                let online = (msg.params().first().copied().unwrap_or(0) & 0x40) == 0;
+                Ok(Some((slot, online)))
+            }
+            NOTIF_POWER => {
+                // address 0x01 = device powered on.
+                if msg.address() == 0x01 {
+                    Ok(Some((slot, true)))
+                } else {
+                    Ok(None)
+                }
+            }
+            _ => Ok(None),
         }
     }
 
