@@ -265,8 +265,41 @@ struct DeviceDetailView: View {
                 battery: device.battery
             )
             Divider()
-            ContentUnavailableView("Settings coming soon", systemImage: "slider.horizontal.3")
+            Color.clear
+                .overlay {
+                    VStack(spacing: 10) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.quaternary)
+                        Text("Settings coming soon")
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+            Divider()
+            Button(role: .destructive) {
+                showingUnpairConfirm = true
+            } label: {
+                Label("Unpair device", systemImage: "minus.circle")
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .padding()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if showingInfo {
+                ZStack {
+                    Color.black.opacity(0.15)
+                        .onTapGesture { showingInfo = false }
+                    DeviceInfoSheet(device: device)
+                        .frame(width: 360, height: 380)
+                        .background(.background)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: .black.opacity(0.25), radius: 20)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: showingInfo)
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -274,10 +307,6 @@ struct DeviceDetailView: View {
                     Label("Device info", systemImage: "info.circle")
                 }
             }
-        }
-        .sheet(isPresented: $showingInfo) {
-            DeviceInfoSheet(device: device, showingUnpairConfirm: $showingUnpairConfirm)
-                .frame(minWidth: 340, minHeight: 300)
         }
         .confirmationDialog(
             "Unpair \(device.name)?",
@@ -303,8 +332,6 @@ struct DeviceDetailView: View {
 
 private struct DeviceInfoSheet: View {
     let device: DeviceModel
-    @Binding var showingUnpairConfirm: Bool
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
@@ -328,17 +355,7 @@ private struct DeviceInfoSheet: View {
                     LabeledContent("Serial", value: device.serial)
                 }
             }
-            Section {
-                Button(role: .destructive) {
-                    dismiss()
-                    showingUnpairConfirm = true
-                } label: {
-                    Label("Unpair device", systemImage: "minus.circle")
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-            }
         }
-        .navigationTitle(device.name)
     }
 }
 
@@ -455,8 +472,41 @@ struct DirectDeviceDetailView: View {
                 battery: device.battery
             )
             Divider()
-            ContentUnavailableView("Settings coming soon", systemImage: "slider.horizontal.3")
+            Color.clear
+                .overlay {
+                    VStack(spacing: 10) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.quaternary)
+                        Text("Settings coming soon")
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+            Divider()
+            Button {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings")!)
+            } label: {
+                Label("Unpair in Bluetooth Settings", systemImage: "arrow.up.right.square")
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .padding()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay {
+            if showingInfo {
+                ZStack {
+                    Color.black.opacity(0.15)
+                        .onTapGesture { showingInfo = false }
+                    DirectDeviceInfoSheet(device: device)
+                        .frame(width: 360, height: 380)
+                        .background(.background)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .shadow(color: .black.opacity(0.25), radius: 20)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.15), value: showingInfo)
         .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -464,10 +514,6 @@ struct DirectDeviceDetailView: View {
                     Label("Device info", systemImage: "info.circle")
                 }
             }
-        }
-        .sheet(isPresented: $showingInfo) {
-            DirectDeviceInfoSheet(device: device)
-                .frame(minWidth: 340, minHeight: 300)
         }
     }
 }
@@ -496,16 +542,7 @@ private struct DirectDeviceInfoSheet: View {
                     LabeledContent("Serial", value: device.serial)
                 }
             }
-            Section {
-                Button {
-                    NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings")!)
-                } label: {
-                    Label("Unpair in Bluetooth Settings", systemImage: "arrow.up.right.square")
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-            }
         }
-        .navigationTitle(device.name)
     }
 }
 

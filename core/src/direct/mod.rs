@@ -70,7 +70,6 @@ pub fn enumerate_direct_devices(
             (path, pid, serial)
         })
         .filter(|(path, _, _)| seen_paths.insert(path.clone()))
-        .filter(|(path, _, _)| !unprobeable.contains(path))
         .collect();
 
     let mut result = Vec::new();
@@ -93,6 +92,14 @@ pub fn enumerate_direct_devices(
 
         // Attempt HID++ 2.0 probe for name and battery. On macOS, BT LE devices are
         // marked Privileged=Yes and the open will fail -- emit with descriptor info only.
+        // Skip the open entirely for paths that already failed (avoids repeated TCC denies).
+        if unprobeable.contains(&path) {
+            result.push(DirectDeviceInfo {
+                product_id, name: name_from_descriptor, serial, kind, battery: None,
+            });
+            continue;
+        }
+
         let transport = match Transport::open(api, &path) {
             Ok(t)  => t,
             Err(_) => {
