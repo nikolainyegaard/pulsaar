@@ -30,14 +30,14 @@ struct PairingSheetView: View {
             // Stage-specific content
             stageContent
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: 140)
+                .frame(minHeight: 160)
 
-            Spacer(minLength: 0)
+            Spacer(minLength: 24)
 
             bottomActions
         }
         .padding(28)
-        .frame(width: 380, height: 380)
+        .frame(width: 400)
         .onAppear {
             store.startPairing(receiverIndex: receiver.id)
         }
