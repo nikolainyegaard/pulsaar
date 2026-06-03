@@ -146,6 +146,10 @@ struct DeviceSidebarRow: View {
 
             if let battery = device.battery {
                 HStack(spacing: 3) {
+                    if battery.isCached {
+                        Image(systemName: "clock")
+                            .font(.caption2)
+                    }
                     Text(battery.levelText)
                         .font(.caption2)
                     Image(systemName: battery.batterySystemImage)
@@ -158,6 +162,7 @@ struct DeviceSidebarRow: View {
     }
 
     private func sidebarBatteryColor(_ battery: BatteryModel) -> Color {
+        if battery.isCached { return .secondary }
         if battery.status?.isCharging == true { return .green }
         guard let level = battery.level else { return .secondary }
         if level <= 10 { return .red }
@@ -226,7 +231,7 @@ struct DeviceDetailView: View {
 
             Spacer()
 
-            if let battery = device.battery, device.isOnline {
+            if let battery = device.battery {
                 VStack(alignment: .trailing, spacing: 4) {
                     Image(systemName: battery.batterySystemImage)
                         .font(.system(size: 28))
@@ -235,6 +240,11 @@ struct DeviceDetailView: View {
                     Text(battery.levelText)
                         .font(.headline)
                         .foregroundStyle(batteryColor(battery))
+                    if battery.isCached {
+                        Text("Last seen")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
@@ -246,8 +256,8 @@ struct DeviceDetailView: View {
     @ViewBuilder
     private var deviceProperties: some View {
         List {
-            if let battery = device.battery, device.isOnline {
-                Section("Battery") {
+            if let battery = device.battery {
+                Section(battery.isCached ? "Battery (last seen)" : "Battery") {
                     LabeledContent("Level", value: battery.levelText)
                     if let status = battery.status {
                         LabeledContent("Status", value: status.label)
@@ -278,6 +288,7 @@ struct DeviceDetailView: View {
     }
 
     private func batteryColor(_ battery: BatteryModel) -> Color {
+        if battery.isCached { return .secondary }
         if battery.status?.isCharging == true { return .green }
         guard let level = battery.level else { return .secondary }
         if level <= 10 { return .red }

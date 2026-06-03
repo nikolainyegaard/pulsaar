@@ -138,6 +138,18 @@ enum BatteryStatus: Equatable {
     var isCharging: Bool {
         self == .recharging || self == .almostFull || self == .full || self == .slowRecharge
     }
+
+    var byte: UInt8 {
+        switch self {
+        case .discharging:    return 0
+        case .recharging:     return 1
+        case .almostFull:     return 2
+        case .full:           return 3
+        case .slowRecharge:   return 4
+        case .invalidBattery: return 5
+        case .thermalError:   return 6
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -145,14 +157,23 @@ enum BatteryStatus: Equatable {
 // ---------------------------------------------------------------------------
 
 struct BatteryModel {
-    let level: Int?           // nil when 0xFF (unavailable)
-    let status: BatteryStatus?  // nil when 0xFF (unavailable)
+    let level: Int?            // nil when 0xFF (unavailable)
+    let status: BatteryStatus? // nil when 0xFF (unavailable)
     let voltage: UInt16?       // nil when 0 (unavailable)
+    let isCached: Bool         // true when sourced from DeviceCache, not a live read
 
     init(c: CBattery) {
-        level  = c.level  == 0xFF ? nil : Int(c.level)
-        status = c.status == 0xFF ? nil : BatteryStatus(byte: c.status)
-        voltage = c.voltage == 0 ? nil : c.voltage
+        level    = c.level   == 0xFF ? nil : Int(c.level)
+        status   = c.status  == 0xFF ? nil : BatteryStatus(byte: c.status)
+        voltage  = c.voltage == 0    ? nil : c.voltage
+        isCached = false
+    }
+
+    init(cached: CachedBattery) {
+        level    = cached.level
+        status   = cached.statusByte.map { BatteryStatus(byte: $0) }
+        voltage  = cached.voltage
+        isCached = true
     }
 
     var levelText: String {
@@ -182,12 +203,8 @@ struct DeviceModel: Identifiable {
     let kind: DeviceKind
     let name: String
     let serial: String
-    let battery: BatteryModel?
-
-    // A device is considered online when battery info was successfully read.
-    // For wireless devices, HID++ feature calls only succeed when connected,
-    // so battery presence is a reliable proxy for connection state.
-    var isOnline: Bool { battery != nil }
+    var battery: BatteryModel? // var so DeviceCache can inject a cached value post-init
+    let isOnline: Bool         // true only when a live battery read succeeded at this reload
 
     init(c: CDeviceInfo, receiverIndex: Int) {
         id            = "\(receiverIndex)-\(c.slot)"
@@ -196,7 +213,9 @@ struct DeviceModel: Identifiable {
         kind          = DeviceKind(byte: c.kind)
         name          = cBufToString(c.name)
         serial        = cBufToString(c.serial)
-        battery       = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
+        let liveBattery = c.has_battery != 0 ? BatteryModel(c: c.battery) : nil
+        battery       = liveBattery
+        isOnline      = liveBattery != nil
     }
 }
 

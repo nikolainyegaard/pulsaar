@@ -38,6 +38,7 @@ final class ReceiverStore {
     var pairingNewSlot: UInt8 = 0
     var pairingError: String = ""
 
+    @ObservationIgnored private var deviceCache = DeviceCache()
     @ObservationIgnored private var pairingRctx: OpaquePointer? = nil
     @ObservationIgnored private var pairingTimer: Timer? = nil
     @ObservationIgnored private var hidMonitor: IOHIDManager? = nil
@@ -364,7 +365,17 @@ final class ReceiverStore {
                 for j in 0..<dcount {
                     var dev = CDeviceInfo()
                     if pulsaar_get_device_info(rctx, j, &dev) == PulsaarStatusOk {
-                        devices.append(DeviceModel(c: dev, receiverIndex: i))
+                        var device = DeviceModel(c: dev, receiverIndex: i)
+                        if device.isOnline {
+                            // Persist the live battery reading for future offline display.
+                            if let battery = device.battery {
+                                deviceCache.update(serial: device.serial, battery: battery)
+                            }
+                        } else if let cached = deviceCache.battery(for: device.serial) {
+                            // Inject last-known battery so the UI can show it while offline.
+                            device.battery = BatteryModel(cached: cached)
+                        }
+                        devices.append(device)
                     }
                 }
             }
