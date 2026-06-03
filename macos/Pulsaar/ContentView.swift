@@ -173,7 +173,7 @@ struct DeviceDetailView: View {
             Image(systemName: device.kind.systemImage)
                 .font(.system(size: 44))
                 .foregroundStyle(device.isOnline ? .primary : .secondary)
-                .frame(width: 56)
+                .frame(width: 56, height: 56)
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(device.name)

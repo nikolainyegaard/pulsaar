@@ -116,11 +116,11 @@ enum BatteryStatus: Equatable {
 
     var label: String {
         switch self {
-        case .discharging: return "Discharging"
-        case .recharging: return "Recharging"
-        case .almostFull: return "Almost full"
-        case .full: return "Full"
-        case .slowRecharge: return "Slow recharge"
+        case .discharging: return "Not charging"
+        case .recharging: return "Charging"
+        case .almostFull: return "Charging (almost full)"
+        case .full: return "Fully charged"
+        case .slowRecharge: return "Charging slowly"
         case .invalidBattery: return "Invalid battery"
         case .thermalError: return "Thermal error"
         }
@@ -152,15 +152,17 @@ struct BatteryModel {
     }
 
     var batterySystemImage: String {
-        let charging = status?.isCharging ?? false
-        let suffix = charging ? "percent.bolt" : "percent"
-        guard let l = level else { return "battery.0\(suffix)" }
+        // battery.bolt is the standard SF Symbols "charging" icon (available since SF Symbols 1).
+        // Level-specific bolt variants (battery.50percent.bolt etc.) do not exist in SF Symbols.
+        // The percentage text shown alongside the icon provides the level when charging.
+        if status?.isCharging == true { return "battery.bolt" }
+        guard let l = level else { return "battery.0percent" }
         switch l {
-        case 75...: return "battery.100\(suffix)"
-        case 50..<75: return "battery.75\(suffix)"
-        case 25..<50: return "battery.50\(suffix)"
-        case 1..<25: return "battery.25\(suffix)"
-        default: return "battery.0\(suffix)"
+        case 75...: return "battery.100percent"
+        case 50..<75: return "battery.75percent"
+        case 25..<50: return "battery.50percent"
+        case 1..<25: return "battery.25percent"
+        default: return "battery.0percent"
         }
     }
 }
