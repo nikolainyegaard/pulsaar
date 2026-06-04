@@ -325,7 +325,7 @@ struct DeviceDetailView: View {
 // MARK: - Device settings panel
 
 // Log-scale DPI slider. Thumb moves continuously during drag; displayed DPI snaps to the
-// nearest valid value from the device list. HID write fires once on release.
+// nearest value from a curated increment scheme. HID write fires once on release.
 private struct LogDpiSlider: View {
     let dpiList: [Int]
     @Binding var currentDpi: Int
@@ -339,46 +339,68 @@ private struct LogDpiSlider: View {
 
     private func frac(for dpi: Int) -> Double {
         guard logMax > logMin else { return 0 }
-        return (log(Double(dpi)) - logMin) / (logMax - logMin)
+        let t = (log(Double(dpi)) - logMin) / (logMax - logMin)
+        return pow(t, 1.5)
     }
 
     private func xPos(for dpi: Int, width: CGFloat) -> CGFloat {
         CGFloat(frac(for: dpi)) * width
     }
 
+    // Curated snap points using the preferred increment scheme, mapped onto the
+    // device's actual supported values. Falls back to the full list for devices
+    // with few DPI options.
+    private var snapList: [Int] {
+        guard let lo = dpiList.first, let hi = dpiList.last, dpiList.count > 20 else { return dpiList }
+        var candidates: [Int] = []
+        var v = 50
+        while v <= 1000 { candidates.append(v); v +=  50 }
+        v = 1100
+        while v <= 2000 { candidates.append(v); v += 100 }
+        v = 2250
+        while v <= 4000 { candidates.append(v); v += 250 }
+        v = 4500
+        while v <= 8000 { candidates.append(v); v += 500 }
+        let inRange = candidates.filter { $0 >= lo && $0 <= hi }
+        var mapped = Array(Set(inRange.compactMap { c in
+            dpiList.min(by: { abs($0 - c) < abs($1 - c) })
+        })).sorted()
+        if mapped.isEmpty { return dpiList }
+        if mapped.first != lo { mapped.insert(lo, at: 0) }
+        if mapped.last  != hi { mapped.append(hi) }
+        return mapped
+    }
+
+    // Tick and label positions: the six landmark values clipped to the device range,
+    // always including the device min and max.
+    private var landmarks: [Int] {
+        guard let lo = dpiList.first, let hi = dpiList.last else { return [] }
+        let base = [200, 600, 1000, 2000, 4000, 8000].filter { $0 > lo && $0 < hi }
+        return ([lo] + base + [hi]).sorted()
+    }
+
     private func dpiAt(frac t: Double) -> Int {
         let clamped = max(0.0, min(1.0, t))
-        let logVal = logMin + clamped * (logMax - logMin)
+        let logT = pow(clamped, 1.0 / 1.5)  // invert the gamma
+        let logVal = logMin + logT * (logMax - logMin)
         let target = Int(exp(logVal).rounded())
-        return dpiList.min(by: { abs($0 - target) < abs($1 - target) }) ?? currentDpi
+        return snapList.min(by: { abs($0 - target) < abs($1 - target) }) ?? currentDpi
     }
 
     // Thumb position fraction: raw drag position during drag, snapped at rest.
     private var thumbFrac: Double { dragFrac ?? frac(for: currentDpi) }
 
-    // DPI shown in the readout: nearest valid value during drag, committed value at rest.
+    // DPI shown in the readout: nearest snap value during drag, committed value at rest.
     private var displayedDpi: Int {
         if let t = dragFrac { return dpiAt(frac: t) }
         return currentDpi
     }
 
-    // ~12 log-spaced tick positions, stable (not dependent on currentDpi).
-    private var ticks: [Int] {
-        guard let first = dpiList.first, let last = dpiList.last, dpiList.count > 12 else { return dpiList }
-        let lMin = log(Double(first)), lMax = log(Double(last))
-        var s: Set<Int> = []
-        for i in 0...11 {
-            let target = Int(exp(lMin + (Double(i) / 11.0) * (lMax - lMin)).rounded())
-            if let n = dpiList.min(by: { abs($0 - target) < abs($1 - target) }) { s.insert(n) }
-        }
-        return s.sorted()
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            // DPI readout: snaps to nearest valid value while dragging.
+            // DPI readout: snaps to nearest snap value while dragging.
             HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text("\(displayedDpi)")
+                Text(String(displayedDpi))
                     .font(.title2)
                     .fontWeight(.bold)
                     .monospacedDigit()
@@ -406,8 +428,8 @@ private struct LogDpiSlider: View {
                             .offset(y: 8)
                     }
 
-                    // Tick marks below the track
-                    ForEach(ticks, id: \.self) { dpi in
+                    // Tick mark at every landmark
+                    ForEach(landmarks, id: \.self) { dpi in
                         Capsule()
                             .fill(Color.secondary.opacity(0.35))
                             .frame(width: 1.5, height: 6)
@@ -438,20 +460,22 @@ private struct LogDpiSlider: View {
             }
             .frame(height: 36)
 
-            // Axis labels: min, geometric mean, max
-            if let first = dpiList.first, let last = dpiList.last {
-                let geoMeanTarget = Int(sqrt(Double(first) * Double(last)).rounded())
-                let mid = dpiList.min(by: { abs($0 - geoMeanTarget) < abs($1 - geoMeanTarget) }) ?? ((first + last) / 2)
-                HStack {
-                    Text("\(first)")
-                    Spacer()
-                    Text("\(mid)")
-                    Spacer()
-                    Text("\(last)")
+            // Axis labels at landmark positions. Canvas gives us real text measurement
+            // so each label can be placed precisely: left-edge-aligned on the first,
+            // right-edge-aligned on the last, centered on all others.
+            Canvas { context, size in
+                let w = size.width
+                for (i, dpi) in landmarks.enumerated() {
+                    let label = context.resolve(
+                        Text(String(dpi)).font(.caption2).foregroundStyle(.secondary)
+                    )
+                    let tw = label.measure(in: size).width
+                    let x = CGFloat(frac(for: dpi)) * w
+                    let drawX = i == 0 ? x : i == landmarks.count - 1 ? x - tw : x - tw / 2
+                    context.draw(label, at: CGPoint(x: drawX, y: 0), anchor: .topLeading)
                 }
-                .font(.caption2)
-                .foregroundStyle(.secondary)
             }
+            .frame(height: 14)
         }
         .padding(.vertical, 4)
     }
