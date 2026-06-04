@@ -21,6 +21,7 @@ enum PairingStage: Equatable {
 final class ReceiverStore {
     var receivers: [ReceiverModel] = []
     var directDevices: [DirectDeviceModel] = []
+    var settingsCache: [String: DeviceSettingsModel] = [:]
     var isLoading = false
     var errorMessage: String? = nil
 
@@ -57,6 +58,12 @@ final class ReceiverStore {
         }
         reload()
         startUSBMonitoring()
+        // Prefetch settings after a short delay so the IOKit matching callbacks
+        // (which fire during IOHIDManagerOpen and trigger their own reload) have
+        // time to complete before we stop listeners and open receivers for settings.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            self?.prefetchSettings()
+        }
     }
 
     deinit {
@@ -143,11 +150,7 @@ final class ReceiverStore {
             }
         }
 
-        guard !eventListeners.isEmpty else { return }
-
-        eventTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-            self?.pollEventListeners()
-        }
+        startEventTimer()
     }
 
     private func pollEventListeners() {
@@ -176,6 +179,20 @@ final class ReceiverStore {
         eventTimer?.invalidate()
         eventTimer = nil
     }
+
+    private func startEventTimer() {
+        guard !eventListeners.isEmpty else { return }
+        eventTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            self?.pollEventListeners()
+        }
+    }
+
+    // Close listener handles so the receiver can be opened for settings reads/writes.
+    // Same pattern as pairing (stopEventListeners before open, restartEventListeners after).
+    func pauseEventPolling() { stopEventListeners() }
+
+    // Reopen listener handles after a settings read/write completes.
+    func resumeEventPolling() { restartEventListeners() }
 
     // Open the receiver for a device, run a closure with the context, then close it.
     // Returns false if the receiver cannot be opened.
@@ -282,6 +299,10 @@ final class ReceiverStore {
     private func finalizePairing() {
         closePairingRctx()
         reload()
+        // Prefetch settings for the newly paired device after the reload settles.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
+            self?.prefetchSettings()
+        }
     }
 
     // Full teardown: stop timer, close rctx, reset all state vars.
@@ -326,6 +347,98 @@ final class ReceiverStore {
         }
         if ok { reload() } else { restartEventListeners() }
         return ok
+    }
+
+    // ---------------------------------------------------------------------------
+    // Device settings
+    // ---------------------------------------------------------------------------
+
+    // Read DPI and scroll settings for a receiver-paired device.
+    // Opens the receiver, reads both features, and closes it.
+    // Returns nil if neither feature is present or the receiver cannot be opened.
+    // This is a blocking call; run it on a background thread.
+    func loadSettings(for device: DeviceModel) -> DeviceSettingsModel? {
+        guard let ctx else { return nil }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return nil }
+        defer { pulsaar_close_receiver(rctx) }
+
+        var dpiOut    = CDpiSettings()
+        var scrollOut = CScrollSettings()
+        pulsaar_get_dpi_settings(rctx, device.slot, &dpiOut)
+        pulsaar_get_scroll_settings(rctx, device.slot, &scrollOut)
+
+        return DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut)
+    }
+
+    // Set the active DPI for a device. Blocking; run on a background thread.
+    func setDpi(for device: DeviceModel, dpi: Int) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_dpi(rctx, device.slot, UInt16(dpi))
+    }
+
+    // Set scroll inversion and hi-res mode for a device. Blocking; run on a background thread.
+    func setScrollSettings(for device: DeviceModel, inverted: Bool, hires: Bool) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_scroll_settings(rctx, device.slot, inverted ? 1 : 0, hires ? 1 : 0)
+    }
+
+    // Prefetch settings for all paired devices across all receivers in the background.
+    // Stops event listeners once for the entire batch, reads all receivers, then restarts.
+    // Called once at launch (after IOKit callbacks settle) and after pairing -- NOT from reload(),
+    // so it never races with an IOKit- or event-triggered reload opening the same receiver.
+    func prefetchSettings() {
+        let snapshot = receivers
+        guard !snapshot.isEmpty else { return }
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            guard let self else { return }
+
+            // Stop all listeners once before opening any receiver.
+            let sem = DispatchSemaphore(value: 0)
+            DispatchQueue.main.async { self.stopEventListeners(); sem.signal() }
+            sem.wait()
+
+            var batch: [String: DeviceSettingsModel] = [:]
+
+            if let ctx = self.ctx {
+                for receiver in snapshot {
+                    guard !receiver.devices.isEmpty else { continue }
+                    var openStatus = PulsaarStatusUnknown
+                    if let rctx: OpaquePointer = pulsaar_open_receiver(ctx, receiver.id, &openStatus) {
+                        for device in receiver.devices {
+                            var dpiOut    = CDpiSettings()
+                            var scrollOut = CScrollSettings()
+                            pulsaar_get_dpi_settings(rctx, device.slot, &dpiOut)
+                            pulsaar_get_scroll_settings(rctx, device.slot, &scrollOut)
+                            // Write scroll mode back after reading to clear the HIRES_WHEEL
+                            // "target" bit (0x10). That bit, when set by other software, routes
+                            // scroll events through the HID++ channel instead of standard HID,
+                            // causing the OS scroll input to stop working while Pulsaar is open.
+                            if scrollOut.has_hires != 0 || scrollOut.has_invert != 0 {
+                                pulsaar_set_scroll_settings(rctx, device.slot, scrollOut.inverted, scrollOut.hires_enabled)
+                            }
+                            if let model = DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut) {
+                                batch[device.id] = model
+                            }
+                        }
+                        pulsaar_close_receiver(rctx)
+                    }
+                }
+            }
+
+            // Update cache and restart listeners in one main-thread block.
+            DispatchQueue.main.async {
+                for (id, model) in batch { self.settingsCache[id] = model }
+                self.restartEventListeners()
+            }
+        }
     }
 
     // showIndicator: true for user-initiated reloads (shows "Scanning..." in sidebar).

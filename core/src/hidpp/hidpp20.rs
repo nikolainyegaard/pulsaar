@@ -16,6 +16,26 @@ pub const FEAT_DEVICE_NAME: u16     = 0x0005;
 pub const FEAT_BATTERY_STATUS: u16  = 0x1000;
 pub const FEAT_BATTERY_VOLTAGE: u16 = 0x1001;
 pub const FEAT_UNIFIED_BATTERY: u16 = 0x1004;
+pub const FEAT_ADJUSTABLE_DPI: u16  = 0x2201;
+pub const FEAT_HIRES_WHEEL: u16     = 0x2121;
+
+/// DPI capabilities and current state for a device with FEAT_ADJUSTABLE_DPI.
+pub struct DpiInfo {
+    /// Sorted list of discrete DPI steps the sensor supports.
+    pub dpi_list:    Vec<u16>,
+    /// Currently active DPI. 0 if the device did not report one.
+    pub current_dpi: u16,
+    /// Default DPI reported by the device. 0 if not reported.
+    pub default_dpi: u16,
+}
+
+/// Scroll wheel capabilities and current state for a device with FEAT_HIRES_WHEEL.
+pub struct ScrollInfo {
+    pub has_invert:    bool,
+    pub has_hires:     bool,
+    pub inverted:      bool,
+    pub hires_enabled: bool,
+}
 
 /// Build the HID++ 2.0 address byte: (function << 4) | SOFTWARE_ID.
 fn fn_addr(function: u8) -> u8 {
@@ -255,6 +275,151 @@ pub fn get_battery_voltage(
     };
 
     Ok(Some(Battery { level: None, status: None, voltage }))
+}
+
+// -- Settings -----------------------------------------------------------------
+
+/// Read DPI capabilities and current DPI using FEAT_ADJUSTABLE_DPI (0x2201).
+///
+/// GetSensorDpiList (fn 1): params = [sensor_idx=0, page_offset].
+/// Each response page holds up to 8 u16 DPI values (big-endian, 0x0000 terminates).
+/// A value with bits[15:13] == 0b111 is a range-step marker: the following value is
+/// the range end; all steps from the previous DPI to the end are expanded.
+///
+/// GetSensorDpi (fn 2): returns [sensor_echo, _, current_hi, current_lo, default_hi, default_lo].
+pub fn get_dpi_info(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+) -> Result<Option<DpiInfo>> {
+    let idx = match features.get(&FEAT_ADJUSTABLE_DPI) {
+        Some(&i) => i,
+        None => return Ok(None),
+    };
+
+    // Read the DPI list, paginating through pages until a 0x0000 terminator.
+    // Each response starts with a sensor-index echo byte; skip it (ignore=1 per Solaar).
+    // GetSensorDpiList params: [sensor_idx=0, direction=0, page_idx].
+    let mut dpi_list: Vec<u16> = Vec::new();
+    let mut page: u8 = 0;
+    'pages: loop {
+        let reply = feature_call(transport, device, idx, 1, &[0x00, 0x00, page])?;
+        let p = reply.params();
+        // Skip byte 0 (sensor echo); DPI values are 2-byte big-endian words starting at byte 1.
+        let mut i = 1;
+        while i + 1 < p.len() {
+            let val = ((p[i] as u16) << 8) | (p[i + 1] as u16);
+            i += 2;
+            if val == 0 {
+                break 'pages;
+            }
+            if val >> 13 == 0b111 {
+                // Range step marker: the next value is the end of the range.
+                let step = val & 0x1FFF;
+                if i + 1 < p.len() {
+                    let end = ((p[i] as u16) << 8) | (p[i + 1] as u16);
+                    i += 2;
+                    if end == 0 { break 'pages; }
+                    if let Some(&last) = dpi_list.last() {
+                        let mut cur = last.saturating_add(step);
+                        while cur <= end {
+                            dpi_list.push(cur);
+                            cur = cur.saturating_add(step);
+                        }
+                    }
+                }
+            } else {
+                dpi_list.push(val);
+            }
+        }
+        // No terminator in this page; advance to the next.
+        page = match page.checked_add(8) { Some(n) => n, None => break };
+        if dpi_list.len() >= 64 { break; }
+    }
+
+    // GetSensorDpi (fn 2): [sensor_echo, current_hi, current_lo, default_hi, default_lo, ...].
+    // Byte 0 is the sensor echo; current DPI is at bytes 1-2, default at bytes 3-4.
+    // If current is 0 the device reports only the default (use default as current).
+    let (current_dpi, default_dpi) = match feature_call(transport, device, idx, 2, &[0x00]) {
+        Ok(reply) => {
+            let p = reply.params();
+            let current = if p.len() >= 3 { ((p[1] as u16) << 8) | (p[2] as u16) } else { 0 };
+            let default = if p.len() >= 5 { ((p[3] as u16) << 8) | (p[4] as u16) } else { 0 };
+            let resolved = if current == 0 { default } else { current };
+            (resolved, default)
+        }
+        Err(_) => (0, 0),
+    };
+
+    Ok(Some(DpiInfo { dpi_list, current_dpi, default_dpi }))
+}
+
+/// Set the active DPI for sensor 0 using FEAT_ADJUSTABLE_DPI (0x2201).
+///
+/// SetSensorDpi (fn 3): params = [sensor_idx=0, dpi_hi, dpi_lo].
+/// Silently succeeds if the feature is not present on this device.
+pub fn set_dpi(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+    dpi: u16,
+) -> Result<()> {
+    let idx = match features.get(&FEAT_ADJUSTABLE_DPI) {
+        Some(&i) => i,
+        None => return Ok(()),
+    };
+    feature_call(transport, device, idx, 3, &[0x00, (dpi >> 8) as u8, (dpi & 0xFF) as u8])?;
+    Ok(())
+}
+
+/// Read scroll wheel capabilities and current mode using FEAT_HIRES_WHEEL (0x2121).
+///
+/// GetCapabilities (fn 0): response byte 1 = capability flags (0x08=has_invert, 0x02=has_hires).
+/// GetMode (fn 1): response byte 0 = mode flags (0x04=inverted, 0x02=hires_enabled).
+pub fn get_scroll_info(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+) -> Result<Option<ScrollInfo>> {
+    let idx = match features.get(&FEAT_HIRES_WHEEL) {
+        Some(&i) => i,
+        None => return Ok(None),
+    };
+
+    // GetCapabilities (fn 0): response[0]=multiplier, response[1]=flags.
+    // Flags: bit 3 (0x08) = supports inversion, bit 2 (0x04) = has ratchet.
+    // Hi-res mode (bit 1 in mode byte) is always settable when the feature is present.
+    let caps_reply = feature_call(transport, device, idx, 0, &[])?;
+    let cap_byte   = caps_reply.params().get(1).copied().unwrap_or(0);
+    let has_invert = (cap_byte & 0x08) != 0;
+    let has_hires  = true; // hi-res mode is always available when HIRES_WHEEL is present
+
+    let mode_reply    = feature_call(transport, device, idx, 1, &[])?;
+    let mode_byte     = mode_reply.params().first().copied().unwrap_or(0);
+    let inverted      = (mode_byte & 0x04) != 0;
+    let hires_enabled = (mode_byte & 0x02) != 0;
+
+    Ok(Some(ScrollInfo { has_invert, has_hires, inverted, hires_enabled }))
+}
+
+/// Set scroll wheel mode using FEAT_HIRES_WHEEL (0x2121).
+///
+/// SetMode (fn 2): params = [mode_byte] where bit 2 = invert, bit 1 = hi-res.
+/// Silently succeeds if the feature is not present on this device.
+pub fn set_scroll_settings(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+    inverted: bool,
+    hires_enabled: bool,
+) -> Result<()> {
+    let idx = match features.get(&FEAT_HIRES_WHEEL) {
+        Some(&i) => i,
+        None => return Ok(()),
+    };
+    let mode_byte = (if inverted { 0x04u8 } else { 0 }) | (if hires_enabled { 0x02 } else { 0 });
+    feature_call(transport, device, idx, 2, &[mode_byte])?;
+    Ok(())
 }
 
 /// Get firmware version using FEAT_FW_VERSION (0x0003).

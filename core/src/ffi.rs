@@ -117,6 +117,34 @@ pub struct CDirectDeviceInfo {
     pub battery:     CBattery,
 }
 
+/// DPI capabilities and current state for a device with the Adjustable DPI feature (0x2201).
+///
+/// dpi_count:   Number of entries populated in dpi_list. 0 means the feature is absent.
+/// dpi_list:    Supported DPI values (native u16, sorted ascending), up to 200 entries.
+/// current_dpi: Currently active DPI. 0 if not reported by the device.
+/// default_dpi: Default DPI reported by the device. 0 if not reported.
+#[repr(C)]
+pub struct CDpiSettings {
+    pub dpi_count:   u8,
+    pub dpi_list:    [u16; 200],
+    pub current_dpi: u16,
+    pub default_dpi: u16,
+}
+
+/// Scroll wheel capabilities and current state for a device with the HiRes Wheel feature (0x2121).
+///
+/// has_invert:    1 if the device supports scroll inversion, 0 if not.
+/// has_hires:     1 if the device supports hi-res scroll mode, 0 if not.
+/// inverted:      Current inversion state (1=inverted). Meaningful only if has_invert=1.
+/// hires_enabled: Current hi-res mode state (1=enabled). Meaningful only if has_hires=1.
+#[repr(C)]
+pub struct CScrollSettings {
+    pub has_invert:    u8,
+    pub has_hires:     u8,
+    pub inverted:      u8,
+    pub hires_enabled: u8,
+}
+
 /// Info about a device paired to a receiver.
 ///
 /// kind:        0=Unknown, 1=Keyboard, 2=Mouse, 3=Numpad, 4=Presenter, 5=Remote,
@@ -797,4 +825,112 @@ pub unsafe extern "C" fn pulsaar_get_direct_device_info(
     };
     *out = direct_device_info_to_c(device);
     PulsaarStatus::Ok
+}
+
+// ---------------------------------------------------------------------------
+// Device settings: DPI and scroll wheel
+// ---------------------------------------------------------------------------
+
+/// Read DPI capabilities and current DPI for the device in the given slot.
+///
+/// Discovers HID++ 2.0 features first, then reads FEAT_ADJUSTABLE_DPI (0x2201).
+/// On success, out->dpi_count > 0 and out->dpi_list is populated.
+/// If the feature is absent on this device, out->dpi_count == 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_dpi_settings(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CDpiSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    *out = CDpiSettings { dpi_count: 0, dpi_list: [0u16; 200], current_dpi: 0, default_dpi: 0 };
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_dpi_info(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            let count = info.dpi_list.len().min(200);
+            (*out).dpi_count   = count as u8;
+            (*out).current_dpi = info.current_dpi;
+            (*out).default_dpi = info.default_dpi;
+            for (i, &val) in info.dpi_list.iter().take(200).enumerate() {
+                (*out).dpi_list[i] = val;
+            }
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set the active DPI for the device in the given slot.
+///
+/// Returns Ok if the device does not support FEAT_ADJUSTABLE_DPI (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_dpi(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    dpi:  u16,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_dpi(slot, dpi)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Read scroll wheel capabilities and current mode for the device in the given slot.
+///
+/// Discovers HID++ 2.0 features first, then reads FEAT_HIRES_WHEEL (0x2121).
+/// On success, out->has_invert and out->has_hires reflect device capabilities.
+/// If the feature is absent, both capability flags are 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_scroll_settings(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CScrollSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    *out = CScrollSettings { has_invert: 0, has_hires: 0, inverted: 0, hires_enabled: 0 };
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_scroll_info(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            (*out).has_invert    = if info.has_invert { 1 } else { 0 };
+            (*out).has_hires     = if info.has_hires  { 1 } else { 0 };
+            (*out).inverted      = if info.inverted      { 1 } else { 0 };
+            (*out).hires_enabled = if info.hires_enabled { 1 } else { 0 };
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok, // feature absent; flags stay 0
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set scroll wheel inversion and hi-res mode for the device in the given slot.
+///
+/// inverted:      1 to enable scroll inversion, 0 to disable.
+/// hires_enabled: 1 to enable hi-res scroll mode, 0 to disable.
+/// Returns Ok if the device does not support FEAT_HIRES_WHEEL (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_scroll_settings(
+    rctx:         *const PulsaarReceiverContext,
+    slot:         u8,
+    inverted:     u8,
+    hires_enabled: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        (*rctx).receiver.set_scroll_settings(slot, inverted != 0, hires_enabled != 0)
+    }));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
 }

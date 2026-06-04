@@ -267,16 +267,7 @@ struct DeviceDetailView: View {
                 battery: device.battery
             )
             Divider()
-            Color.clear
-                .overlay {
-                    VStack(spacing: 10) {
-                        Image(systemName: "slider.horizontal.3")
-                            .font(.system(size: 32))
-                            .foregroundStyle(.quaternary)
-                        Text("Settings coming soon")
-                            .foregroundStyle(.quaternary)
-                    }
-                }
+            DeviceSettingsPanel(device: device)
             Divider()
             Button(role: .destructive) {
                 showingUnpairConfirm = true
@@ -328,6 +319,264 @@ struct DeviceDetailView: View {
         } message: {
             Text("The receiver did not acknowledge the unpair request.")
         }
+    }
+}
+
+// MARK: - Device settings panel
+
+// Log-scale DPI slider. Thumb moves continuously during drag; displayed DPI snaps to the
+// nearest valid value from the device list. HID write fires once on release.
+private struct LogDpiSlider: View {
+    let dpiList: [Int]
+    @Binding var currentDpi: Int
+    let onRelease: (Int) -> Void
+
+    // Raw 0..1 fraction while dragging; nil when at rest.
+    @State private var dragFrac: Double? = nil
+
+    private var logMin: Double { log(Double(dpiList.first ?? 200)) }
+    private var logMax: Double { log(Double(dpiList.last  ?? 8000)) }
+
+    private func frac(for dpi: Int) -> Double {
+        guard logMax > logMin else { return 0 }
+        return (log(Double(dpi)) - logMin) / (logMax - logMin)
+    }
+
+    private func xPos(for dpi: Int, width: CGFloat) -> CGFloat {
+        CGFloat(frac(for: dpi)) * width
+    }
+
+    private func dpiAt(frac t: Double) -> Int {
+        let clamped = max(0.0, min(1.0, t))
+        let logVal = logMin + clamped * (logMax - logMin)
+        let target = Int(exp(logVal).rounded())
+        return dpiList.min(by: { abs($0 - target) < abs($1 - target) }) ?? currentDpi
+    }
+
+    // Thumb position fraction: raw drag position during drag, snapped at rest.
+    private var thumbFrac: Double { dragFrac ?? frac(for: currentDpi) }
+
+    // DPI shown in the readout: nearest valid value during drag, committed value at rest.
+    private var displayedDpi: Int {
+        if let t = dragFrac { return dpiAt(frac: t) }
+        return currentDpi
+    }
+
+    // ~12 log-spaced tick positions, stable (not dependent on currentDpi).
+    private var ticks: [Int] {
+        guard let first = dpiList.first, let last = dpiList.last, dpiList.count > 12 else { return dpiList }
+        let lMin = log(Double(first)), lMax = log(Double(last))
+        var s: Set<Int> = []
+        for i in 0...11 {
+            let target = Int(exp(lMin + (Double(i) / 11.0) * (lMax - lMin)).rounded())
+            if let n = dpiList.min(by: { abs($0 - target) < abs($1 - target) }) { s.insert(n) }
+        }
+        return s.sorted()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // DPI readout: snaps to nearest valid value while dragging.
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text("\(displayedDpi)")
+                    .font(.title2)
+                    .fontWeight(.bold)
+                    .monospacedDigit()
+                Text("DPI")
+                    .foregroundStyle(.secondary)
+            }
+
+            // Track, ticks, and thumb in a single GeometryReader.
+            GeometryReader { geo in
+                let w = geo.size.width
+                let tx = CGFloat(max(0.0, min(1.0, thumbFrac))) * w
+
+                ZStack(alignment: .topLeading) {
+                    // Track background
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.25))
+                        .frame(width: w, height: 4)
+                        .offset(y: 8)
+
+                    // Filled portion left of thumb
+                    if tx > 0 {
+                        Capsule()
+                            .fill(Color.accentColor.opacity(0.5))
+                            .frame(width: tx, height: 4)
+                            .offset(y: 8)
+                    }
+
+                    // Tick marks below the track
+                    ForEach(ticks, id: \.self) { dpi in
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.35))
+                            .frame(width: 1.5, height: 6)
+                            .offset(x: xPos(for: dpi, width: w) - 0.75, y: 20)
+                    }
+
+                    // Thumb: follows raw drag position continuously.
+                    Circle()
+                        .fill(.white)
+                        .overlay(Circle().strokeBorder(Color.gray.opacity(0.2), lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.18), radius: 2, y: 1)
+                        .frame(width: 20, height: 20)
+                        .offset(x: tx - 10)
+                }
+                .frame(height: 36)
+                .contentShape(Rectangle())
+                .gesture(DragGesture(minimumDistance: 0)
+                    .onChanged { v in
+                        dragFrac = Double(v.location.x / w)
+                    }
+                    .onEnded { v in
+                        let snapped = dpiAt(frac: Double(v.location.x / w))
+                        dragFrac = nil
+                        currentDpi = snapped
+                        onRelease(snapped)
+                    }
+                )
+            }
+            .frame(height: 36)
+
+            // Axis labels: min, geometric mean, max
+            if let first = dpiList.first, let last = dpiList.last {
+                let geoMeanTarget = Int(sqrt(Double(first) * Double(last)).rounded())
+                let mid = dpiList.min(by: { abs($0 - geoMeanTarget) < abs($1 - geoMeanTarget) }) ?? ((first + last) / 2)
+                HStack {
+                    Text("\(first)")
+                    Spacer()
+                    Text("\(mid)")
+                    Spacer()
+                    Text("\(last)")
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+    }
+}
+
+private struct DeviceSettingsPanel: View {
+    let device: DeviceModel
+    @Environment(ReceiverStore.self) private var store
+    @State private var settings: DeviceSettingsModel? = nil
+    @State private var isLoading = true
+    @State private var currentDpi: Int = 0
+    @State private var scrollInverted: Bool = false
+    @State private var hiresEnabled: Bool = false
+
+    var body: some View {
+        Group {
+            if isLoading {
+                Color.clear.overlay {
+                    ProgressView("Reading settings...")
+                        .foregroundStyle(.secondary)
+                }
+            } else if let s = settings, s.hasAnySettings {
+                settingsForm(s)
+            } else {
+                Color.clear.overlay {
+                    VStack(spacing: 10) {
+                        Image(systemName: "slider.horizontal.3")
+                            .font(.system(size: 32))
+                            .foregroundStyle(.quaternary)
+                        Text("No configurable settings")
+                            .foregroundStyle(.quaternary)
+                    }
+                }
+            }
+        }
+        .task(id: device.id) {
+            // Serve from cache immediately if available -- no HID round-trip needed.
+            if let cached = store.settingsCache[device.id] {
+                applySettings(cached)
+                isLoading = false
+                return
+            }
+            // Cache miss: load from device.
+            isLoading = true
+            store.pauseEventPolling()
+            let capturedDevice = device
+            let capturedStore  = store
+            let result = await withCheckedContinuation { continuation in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    continuation.resume(returning: capturedStore.loadSettings(for: capturedDevice))
+                }
+            }
+            store.resumeEventPolling()
+            if let s = result {
+                applySettings(s)
+                store.settingsCache[capturedDevice.id] = s
+            }
+            settings  = result
+            isLoading = false
+        }
+    }
+
+    private func applySettings(_ s: DeviceSettingsModel) {
+        settings       = s
+        currentDpi     = s.currentDpi
+        scrollInverted = s.scrollInverted
+        hiresEnabled   = s.hiresEnabled
+    }
+
+    private func writeDpi(_ dpi: Int) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setDpi(for: capturedDevice, dpi: dpi)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    private func writeScrollSettings(inverted: Bool, hires: Bool) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setScrollSettings(for: capturedDevice, inverted: inverted, hires: hires)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    @ViewBuilder
+    private func settingsForm(_ s: DeviceSettingsModel) -> some View {
+        Form {
+            if s.hasDpi {
+                Section("Sensitivity") {
+                    LogDpiSlider(
+                        dpiList: s.dpiList,
+                        currentDpi: $currentDpi,
+                        onRelease: writeDpi
+                    )
+                }
+            }
+            if s.hasScrollSettings {
+                Section("Scroll Wheel") {
+                    if s.hasInvert {
+                        Toggle("Invert scroll direction", isOn: Binding(
+                            get: { scrollInverted },
+                            set: { newVal in
+                                scrollInverted = newVal
+                                writeScrollSettings(inverted: newVal, hires: hiresEnabled)
+                            }
+                        ))
+                    }
+                    if s.hasHires {
+                        Toggle("High-resolution scrolling", isOn: Binding(
+                            get: { hiresEnabled },
+                            set: { newVal in
+                                hiresEnabled = newVal
+                                writeScrollSettings(inverted: scrollInverted, hires: newVal)
+                            }
+                        ))
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
@@ -442,6 +691,7 @@ struct ReceiverDetailView: View {
                                     .foregroundStyle(.tertiary)
                             }
                             .opacity(device.isOnline ? 1.0 : 0.5)
+                            .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
                     }

@@ -254,6 +254,50 @@ struct DirectDeviceModel: Identifiable {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Settings model
+// ---------------------------------------------------------------------------
+
+struct DeviceSettingsModel {
+    // DPI
+    let dpiList:    [Int]   // empty if FEAT_ADJUSTABLE_DPI is absent
+    var currentDpi: Int     // 0 if not reported by device
+    let defaultDpi: Int
+
+    // Scroll wheel
+    let hasInvert:    Bool
+    let hasHires:     Bool
+    var scrollInverted: Bool
+    var hiresEnabled:   Bool
+
+    var hasDpi: Bool           { !dpiList.isEmpty }
+    var hasScrollSettings: Bool { hasInvert || hasHires }
+    var hasAnySettings: Bool   { hasDpi || hasScrollSettings }
+
+    init?(dpi: CDpiSettings, scroll: CScrollSettings) {
+        if dpi.dpi_count > 0 {
+            dpiList = withUnsafeBytes(of: dpi.dpi_list) { raw in
+                let words = raw.bindMemory(to: UInt16.self)
+                return (0..<Int(dpi.dpi_count)).map { Int(words[$0]) }
+            }
+            currentDpi = Int(dpi.current_dpi)
+            defaultDpi = Int(dpi.default_dpi)
+        } else {
+            dpiList    = []
+            currentDpi = 0
+            defaultDpi = 0
+        }
+
+        hasInvert     = scroll.has_invert    != 0
+        hasHires      = scroll.has_hires     != 0
+        scrollInverted = scroll.inverted     != 0
+        hiresEnabled   = scroll.hires_enabled != 0
+
+        // Return nil if neither feature is present so callers can show a "no settings" state.
+        if !hasAnySettings { return nil }
+    }
+}
+
 struct ReceiverModel: Identifiable {
     let id: Int             // index within the session's receiver list
     let productId: UInt16

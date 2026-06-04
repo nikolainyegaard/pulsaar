@@ -53,6 +53,28 @@ typedef struct {
     uint16_t voltage;
 } CBattery;
 
+// DPI capabilities and current state (FEAT_ADJUSTABLE_DPI 0x2201).
+// dpi_count: entries in dpi_list; 0 means the feature is absent on this device.
+// dpi_list:  supported DPI values (native u16, sorted), up to 200 entries.
+// current_dpi: active DPI; 0 if not reported.
+// default_dpi: device default; 0 if not reported.
+typedef struct {
+    uint8_t  dpi_count;
+    uint16_t dpi_list[200];
+    uint16_t current_dpi;
+    uint16_t default_dpi;
+} CDpiSettings;
+
+// Scroll wheel capabilities and current state (FEAT_HIRES_WHEEL 0x2121).
+// has_invert / has_hires: 1 if the device supports this capability, 0 if not.
+// inverted / hires_enabled: current state; only meaningful when the corresponding has_ flag is 1.
+typedef struct {
+    uint8_t has_invert;
+    uint8_t has_hires;
+    uint8_t inverted;
+    uint8_t hires_enabled;
+} CScrollSettings;
+
 // Info about a device paired to a receiver.
 // kind: 0=Unknown, 1=Keyboard, 2=Mouse, 3=Numpad, 4=Presenter, 5=Remote,
 //       6=Trackball, 7=Touchpad, 8=Tablet, 9=Gamepad, 10=Joystick,
@@ -211,3 +233,28 @@ size_t pulsaar_get_direct_device_count(const struct PulsaarContext *ctx);
 // Fill out with info for the direct device at index (0-based).
 // Returns InvalidArg if ctx or out is null, or index is out of range.
 PulsaarStatus pulsaar_get_direct_device_info(const struct PulsaarContext *ctx, size_t index, CDirectDeviceInfo *out);
+
+// ---------------------------------------------------------------------------
+// Device settings: DPI and scroll wheel
+// ---------------------------------------------------------------------------
+
+// Read DPI capabilities and current DPI for the device in the given slot.
+// out->dpi_count == 0 means the device does not support FEAT_ADJUSTABLE_DPI.
+// Returns InvalidArg if rctx or out is null, or slot is 0.
+PulsaarStatus pulsaar_get_dpi_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, CDpiSettings *out);
+
+// Set the active DPI for the device in the given slot.
+// No-op (returns Ok) if the device does not support FEAT_ADJUSTABLE_DPI.
+// Returns InvalidArg if rctx is null or slot is 0.
+PulsaarStatus pulsaar_set_dpi(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint16_t dpi);
+
+// Read scroll wheel capabilities and current mode for the device in the given slot.
+// out->has_invert and out->has_hires are 0 if the device does not support FEAT_HIRES_WHEEL.
+// Returns InvalidArg if rctx or out is null, or slot is 0.
+PulsaarStatus pulsaar_get_scroll_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, CScrollSettings *out);
+
+// Set scroll wheel inversion and hi-res mode for the device in the given slot.
+// No-op (returns Ok) if the device does not support FEAT_HIRES_WHEEL.
+// inverted: 1 to invert, 0 to not invert. hires_enabled: 1 to enable hi-res, 0 to disable.
+// Returns InvalidArg if rctx is null or slot is 0.
+PulsaarStatus pulsaar_set_scroll_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t inverted, uint8_t hires_enabled);

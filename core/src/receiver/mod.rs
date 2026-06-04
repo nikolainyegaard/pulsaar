@@ -197,6 +197,37 @@ impl Receiver {
             }
         }
     }
+
+    /// Expose the transport for debug/probe tooling.
+    pub fn transport(&self) -> &crate::transport::Transport { &self.transport }
+
+    /// Read DPI capabilities and current DPI for the device in the given slot.
+    /// Returns None if the device does not support FEAT_ADJUSTABLE_DPI (0x2201).
+    pub fn get_dpi_info(&self, slot: u8) -> crate::error::Result<Option<hidpp20::DpiInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_dpi_info(&self.transport, slot, &features)
+    }
+
+    /// Set the active DPI for the device in the given slot.
+    /// Returns Ok without sending anything if the device does not support FEAT_ADJUSTABLE_DPI.
+    pub fn set_dpi(&self, slot: u8, dpi: u16) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_dpi(&self.transport, slot, &features, dpi)
+    }
+
+    /// Read scroll wheel capabilities and current mode for the device in the given slot.
+    /// Returns None if the device does not support FEAT_HIRES_WHEEL (0x2121).
+    pub fn get_scroll_info(&self, slot: u8) -> crate::error::Result<Option<hidpp20::ScrollInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_scroll_info(&self.transport, slot, &features)
+    }
+
+    /// Set scroll wheel inversion and hi-res mode for the device in the given slot.
+    /// Returns Ok without sending anything if the device does not support FEAT_HIRES_WHEEL.
+    pub fn set_scroll_settings(&self, slot: u8, inverted: bool, hires_enabled: bool) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_scroll_settings(&self.transport, slot, &features, inverted, hires_enabled)
+    }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
