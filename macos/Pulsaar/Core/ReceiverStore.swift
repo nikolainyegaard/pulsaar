@@ -532,6 +532,15 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_dpi(rctx, device.slot, UInt16(dpi))
         pLog("WRITE", "  pulsaar_set_dpi -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                cached.currentDpi = dpi
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setScrollSettings(for device: DeviceModel, inverted: Bool, hires: Bool) {
@@ -545,6 +554,16 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_scroll_settings(rctx, device.slot, inverted ? 1 : 0, hires ? 1 : 0)
         pLog("WRITE", "  pulsaar_set_scroll_settings -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                cached.scrollInverted = inverted
+                cached.hiresEnabled = hires
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setSmartShift(for device: DeviceModel, wheelMode: UInt8, torque: UInt8) {
@@ -558,6 +577,16 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_smartshift(rctx, device.slot, wheelMode, torque)
         pLog("WRITE", "  pulsaar_set_smartshift -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                if let wm = WheelMode(rawValue: wheelMode) { cached.wheelMode = wm }
+                cached.smartShiftTorque = Int(torque)
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setActiveHost(for device: DeviceModel, hostSlot: UInt8) {
@@ -571,6 +600,18 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_active_host(rctx, device.slot, hostSlot)
         pLog("WRITE", "  pulsaar_set_active_host -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId], var hosts = cached.hosts {
+                for i in hosts.indices {
+                    hosts[i] = HostInfo(id: hosts[i].id, name: hosts[i].name, isActive: hosts[i].id == hostSlot)
+                }
+                cached.hosts = hosts
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setFnSwap(for device: DeviceModel, swapped: Bool) {
@@ -584,6 +625,15 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_fn_swap(rctx, device.slot, swapped ? 1 : 0)
         pLog("WRITE", "  pulsaar_set_fn_swap -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                cached.fnSwapped = swapped
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setMultiplatform(for device: DeviceModel, platformIndex: UInt8) {
@@ -597,6 +647,15 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_multiplatform(rctx, device.slot, platformIndex)
         pLog("WRITE", "  pulsaar_set_multiplatform -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                cached.currentOsIdx = Int(platformIndex)
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     func setBacklight(for device: DeviceModel, mode: UInt8, brightness: UInt8) {
@@ -610,6 +669,16 @@ final class ReceiverStore {
         defer { pulsaar_close_receiver(rctx) }
         let s = pulsaar_set_backlight(rctx, device.slot, mode, brightness)
         pLog("WRITE", "  pulsaar_set_backlight -> \(statusStr(s))")
+        guard s == PulsaarStatusOk else { return }
+        let deviceId = device.id
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if var cached = self.settingsCache[deviceId] {
+                cached.backlightMode = BacklightMode(rawValue: mode) ?? cached.backlightMode
+                cached.backlightBrightness = Int(brightness)
+                self.settingsCache[deviceId] = cached
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------

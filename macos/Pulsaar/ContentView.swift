@@ -677,7 +677,6 @@ private struct DeviceSettingsPanel: View {
 
     @ViewBuilder
     private func settingsForm(_ s: DeviceSettingsModel) -> some View {
-        let hasAdvanced = s.hasSmartShift && s.hasTorque && wheelMode == .smartShift
         Form {
             // Sensitivity (mice)
             if s.hasDpi {
@@ -703,6 +702,27 @@ private struct DeviceSettingsPanel: View {
                         )) {
                             ForEach(WheelMode.allCases, id: \.self) { mode in
                                 Text(mode.label).tag(mode)
+                            }
+                        }
+                        if s.hasTorque && wheelMode == .smartShift {
+                            HStack(spacing: 12) {
+                                Text("Ratchet threshold")
+                                Slider(
+                                    value: Binding(
+                                        get: { Double(smartShiftTorque) },
+                                        set: { smartShiftTorque = Int($0) }
+                                    ),
+                                    in: 1...100,
+                                    onEditingChanged: { editing in
+                                        if !editing {
+                                            writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
+                                        }
+                                    }
+                                )
+                                Text("\(smartShiftTorque)%")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 40, alignment: .trailing)
                             }
                         }
                     }
@@ -785,7 +805,6 @@ private struct DeviceSettingsPanel: View {
                                     set: { backlightBrightness = Int($0) }
                                 ),
                                 in: 0...100,
-                                step: 1,
                                 onEditingChanged: { editing in
                                     if !editing {
                                         writeBacklight(mode: backlightMode.rawValue, brightness: UInt8(backlightBrightness))
@@ -817,31 +836,6 @@ private struct DeviceSettingsPanel: View {
                 }
             }
 
-            // Advanced Options: torque tuning when Ratchet mode is active
-            if hasAdvanced {
-                Section("Advanced Options") {
-                    HStack(spacing: 12) {
-                        Text("Ratchet threshold")
-                        Slider(
-                            value: Binding(
-                                get: { Double(smartShiftTorque) },
-                                set: { smartShiftTorque = Int($0) }
-                            ),
-                            in: 1...100,
-                            step: 1,
-                            onEditingChanged: { editing in
-                                if !editing {
-                                    writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
-                                }
-                            }
-                        )
-                        Text("\(smartShiftTorque)%")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                            .frame(width: 40, alignment: .trailing)
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
     }
