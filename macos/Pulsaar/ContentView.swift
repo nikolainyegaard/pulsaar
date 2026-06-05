@@ -486,9 +486,20 @@ private struct DeviceSettingsPanel: View {
     @Environment(ReceiverStore.self) private var store
     @State private var settings: DeviceSettingsModel? = nil
     @State private var isLoading = true
+    // Phase 1
     @State private var currentDpi: Int = 0
     @State private var scrollInverted: Bool = false
     @State private var hiresEnabled: Bool = false
+    // Phase 2
+    @State private var wheelMode: WheelMode = .smartShift
+    @State private var smartShiftTorque: Int = 50
+    @State private var currentHostIdx: Int = 0
+    @State private var fnSwapped: Bool = false
+    @State private var currentOsIdx: Int = 0
+    @State private var backlightMode: BacklightMode = .disabled
+    @State private var backlightBrightness: Int = 50
+    // UI
+    @State private var advancedExpanded: Bool = false
 
     var body: some View {
         Group {
@@ -539,11 +550,22 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func applySettings(_ s: DeviceSettingsModel) {
-        settings       = s
-        currentDpi     = s.currentDpi
-        scrollInverted = s.scrollInverted
-        hiresEnabled   = s.hiresEnabled
+        settings            = s
+        currentDpi          = s.currentDpi
+        scrollInverted      = s.scrollInverted
+        hiresEnabled        = s.hiresEnabled
+        if let wm = s.wheelMode         { wheelMode           = wm }
+        smartShiftTorque    = s.smartShiftTorque
+        if let hosts = s.hosts, let activeIdx = hosts.firstIndex(where: { $0.isActive }) {
+            currentHostIdx = activeIdx
+        }
+        if let fn = s.fnSwapped         { fnSwapped           = fn }
+        currentOsIdx        = s.currentOsIdx
+        if let blMode = s.backlightMode { backlightMode       = blMode }
+        backlightBrightness = s.backlightBrightness
     }
+
+    // MARK: Write functions
 
     private func writeDpi(_ dpi: Int) {
         let capturedDevice = device
@@ -565,9 +587,63 @@ private struct DeviceSettingsPanel: View {
         }
     }
 
+    private func writeSmartShift(wheelMode: UInt8, torque: UInt8) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setSmartShift(for: capturedDevice, wheelMode: wheelMode, torque: torque)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    private func writeActiveHost(hostSlot: UInt8) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setActiveHost(for: capturedDevice, hostSlot: hostSlot)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    private func writeFnSwap(swapped: Bool) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setFnSwap(for: capturedDevice, swapped: swapped)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    private func writeMultiplatform(platformIndex: UInt8) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setMultiplatform(for: capturedDevice, platformIndex: platformIndex)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    private func writeBacklight(mode: UInt8, brightness: UInt8) {
+        let capturedDevice = device
+        let capturedStore  = store
+        capturedStore.pauseEventPolling()
+        DispatchQueue.global(qos: .userInitiated).async {
+            capturedStore.setBacklight(for: capturedDevice, mode: mode, brightness: brightness)
+            DispatchQueue.main.async { capturedStore.resumeEventPolling() }
+        }
+    }
+
+    // MARK: Settings form
+
     @ViewBuilder
     private func settingsForm(_ s: DeviceSettingsModel) -> some View {
+        let hasAdvanced = s.hasSmartShift && s.hasTorque && wheelMode == .smartShift
         Form {
+            // Sensitivity (mice)
             if s.hasDpi {
                 Section("Sensitivity") {
                     LogDpiSlider(
@@ -577,8 +653,23 @@ private struct DeviceSettingsPanel: View {
                     )
                 }
             }
-            if s.hasScrollSettings {
+
+            // Scroll Wheel (mice)
+            if s.hasScrollSettings || s.hasSmartShift {
                 Section("Scroll Wheel") {
+                    if s.hasSmartShift {
+                        Picker("Scroll mode", selection: Binding(
+                            get: { wheelMode },
+                            set: { newMode in
+                                wheelMode = newMode
+                                writeSmartShift(wheelMode: newMode.rawValue, torque: UInt8(smartShiftTorque))
+                            }
+                        )) {
+                            ForEach(WheelMode.allCases, id: \.self) { mode in
+                                Text(mode.label).tag(mode)
+                            }
+                        }
+                    }
                     if s.hasInvert {
                         Toggle("Invert scroll direction", isOn: Binding(
                             get: { scrollInverted },
@@ -596,6 +687,131 @@ private struct DeviceSettingsPanel: View {
                                 writeScrollSettings(inverted: scrollInverted, hires: newVal)
                             }
                         ))
+                    }
+                }
+            }
+
+            // Keyboard section
+            if s.hasFnSwap || s.hasMultiplatform {
+                Section("Keyboard") {
+                    if s.hasFnSwap {
+                        Toggle("Swap function keys", isOn: Binding(
+                            get: { fnSwapped },
+                            set: { newVal in
+                                fnSwapped = newVal
+                                writeFnSwap(swapped: newVal)
+                            }
+                        ))
+                    }
+                    if s.hasMultiplatform, let platforms = s.platforms {
+                        Picker("Set OS", selection: Binding(
+                            get: { currentOsIdx },
+                            set: { newIdx in
+                                guard newIdx < platforms.count else { return }
+                                currentOsIdx = newIdx
+                                writeMultiplatform(platformIndex: platforms[newIdx].id)
+                            }
+                        )) {
+                            ForEach(Array(platforms.enumerated()), id: \.offset) { idx, platform in
+                                Text(platform.name).tag(idx)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Backlight (keyboards)
+            if s.hasBacklight {
+                Section("Backlight") {
+                    Picker("Mode", selection: Binding(
+                        get: { backlightMode },
+                        set: { newMode in
+                            backlightMode = newMode
+                            writeBacklight(mode: newMode.rawValue, brightness: UInt8(backlightBrightness))
+                        }
+                    )) {
+                        Text(BacklightMode.disabled.label).tag(BacklightMode.disabled)
+                        if s.backlightAutoSupported {
+                            Text(BacklightMode.automatic.label).tag(BacklightMode.automatic)
+                        }
+                        if s.backlightManualSupported {
+                            Text(BacklightMode.manual.label).tag(BacklightMode.manual)
+                        }
+                    }
+                    if backlightMode == .manual {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Brightness")
+                                Spacer()
+                                Text("\(backlightBrightness)%")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(backlightBrightness) },
+                                    set: { backlightBrightness = Int($0) }
+                                ),
+                                in: 0...100,
+                                step: 1,
+                                onEditingChanged: { editing in
+                                    if !editing {
+                                        writeBacklight(mode: backlightMode.rawValue, brightness: UInt8(backlightBrightness))
+                                    }
+                                }
+                            )
+                        }
+                        .padding(.vertical, 2)
+                    }
+                }
+            }
+
+            // Connectivity: Change Host (mice and keyboards)
+            if s.hasHosts, let hosts = s.hosts {
+                Section("Connectivity") {
+                    Picker("Switch to", selection: Binding(
+                        get: { currentHostIdx },
+                        set: { newIdx in
+                            guard newIdx < hosts.count else { return }
+                            currentHostIdx = newIdx
+                            writeActiveHost(hostSlot: hosts[newIdx].id)
+                        }
+                    )) {
+                        ForEach(Array(hosts.enumerated()), id: \.offset) { idx, host in
+                            let label = host.name.isEmpty ? "Host \(host.id + 1)" : host.name
+                            Text(label).tag(idx)
+                        }
+                    }
+                }
+            }
+
+            // Advanced Options: torque tuning when SmartShift mode is active
+            if hasAdvanced {
+                Section {
+                    DisclosureGroup("Advanced Options", isExpanded: $advancedExpanded) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack {
+                                Text("Ratchet threshold")
+                                Spacer()
+                                Text("\(smartShiftTorque)%")
+                                    .monospacedDigit()
+                                    .foregroundStyle(.secondary)
+                            }
+                            Slider(
+                                value: Binding(
+                                    get: { Double(smartShiftTorque) },
+                                    set: { smartShiftTorque = Int($0) }
+                                ),
+                                in: 1...100,
+                                step: 1,
+                                onEditingChanged: { editing in
+                                    if !editing {
+                                        writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
+                                    }
+                                }
+                            )
+                        }
+                        .padding(.vertical, 2)
                     }
                 }
             }

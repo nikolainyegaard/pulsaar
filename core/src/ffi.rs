@@ -145,6 +145,79 @@ pub struct CScrollSettings {
     pub hires_enabled: u8,
 }
 
+/// SmartShift ratchet state for a device with FEAT_SMART_SHIFT_ENHANCED (0x2111).
+///
+/// wheel_mode: 1=always freespin, 2=smart-shift (auto based on speed).
+/// has_torque: 1 if the device supports tunable ratchet torque, 0 if not.
+/// torque:     Ratchet engagement force, 1-100. Meaningful only if has_torque=1.
+#[repr(C)]
+pub struct CSmartShiftSettings {
+    pub wheel_mode: u8,
+    pub has_torque: u8,
+    pub torque:     u8,
+}
+
+/// Info about one host slot as returned by pulsaar_get_hosts.
+///
+/// slot:      0-based slot index (use this value with pulsaar_set_active_host).
+/// name:      Null-terminated host name (up to 63 chars).
+/// is_active: 1 if this is the currently active host, 0 otherwise.
+#[repr(C)]
+pub struct CHostInfo {
+    pub slot:      u8,
+    pub name:      [u8; 64],
+    pub is_active: u8,
+}
+
+/// List of hosts returned by pulsaar_get_hosts.
+///
+/// count: number of valid entries in hosts (0 if the feature is absent).
+#[repr(C)]
+pub struct CHostList {
+    pub count: u8,
+    pub hosts: [CHostInfo; 8],
+}
+
+/// FN key inversion state for a keyboard with FEAT_FN_INVERSION (0x40A0 / 0x40A2 / 0x40A3).
+///
+/// has_feature: 1 if the device has any FN inversion feature, 0 if absent.
+/// fn_swapped:  1 if F1-F12 keys act as multimedia keys by default (swap is active).
+#[repr(C)]
+pub struct CFnSettings {
+    pub has_feature: u8,
+    pub fn_swapped:  u8,
+}
+
+/// Multiplatform OS layout state for a keyboard with FEAT_MULTIPLATFORM (0x4531).
+///
+/// count:            number of valid entries in platform_names/platform_indices (0 if absent).
+/// current:          index into platform_names/platform_indices of the active platform.
+/// platform_names:   null-terminated OS name strings, up to 8 platforms.
+/// platform_indices: platform index values to pass to pulsaar_set_multiplatform.
+#[repr(C)]
+pub struct CMultiplatformSettings {
+    pub count:             u8,
+    pub current:           u8,
+    pub platform_names:    [[u8; 32]; 8],
+    pub platform_indices:  [u8; 8],
+}
+
+/// Backlight state for a keyboard with FEAT_BACKLIGHT2 (0x1982).
+///
+/// has_feature:      1 if the device has FEAT_BACKLIGHT2, 0 if absent.
+/// mode:             0=disabled, 1=automatic, 3=manual (permanent on).
+/// auto_supported:   1 if automatic mode is available, 0 if not.
+/// manual_supported: 1 if manual mode is available, 0 if not.
+/// brightness:       0-100 brightness level (relevant when mode=3).
+#[repr(C)]
+pub struct CBacklightSettings {
+    pub has_feature:      u8,
+    pub mode:             u8,
+    pub auto_supported:   u8,
+    pub manual_supported: u8,
+    pub brightness:       u8,
+}
+
 /// Info about a device paired to a receiver.
 ///
 /// kind:        0=Unknown, 1=Keyboard, 2=Mouse, 3=Numpad, 4=Presenter, 5=Remote,
@@ -928,6 +1001,267 @@ pub unsafe extern "C" fn pulsaar_set_scroll_settings(
     let result = catch_unwind(AssertUnwindSafe(|| {
         (*rctx).receiver.set_scroll_settings(slot, inverted != 0, hires_enabled != 0)
     }));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device settings: SmartShift, Change Host, FN swap, Multiplatform, Backlight
+// ---------------------------------------------------------------------------
+
+/// Read smart-shift ratchet mode and torque for the device in the given slot.
+///
+/// If FEAT_SMART_SHIFT_ENHANCED is absent, out->wheel_mode is set to 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_smartshift(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CSmartShiftSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    *out = CSmartShiftSettings { wheel_mode: 0, has_torque: 0, torque: 0 };
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_smart_shift(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            (*out).wheel_mode = info.wheel_mode;
+            (*out).has_torque = if info.has_torque { 1 } else { 0 };
+            (*out).torque     = info.torque;
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set smart-shift wheel mode and torque for the device in the given slot.
+///
+/// wheel_mode: 1=freespin, 2=smart-shift.
+/// torque:     ratchet engagement force 1-100 (ignored if device has_torque=0).
+/// Returns Ok if the device does not support FEAT_SMART_SHIFT_ENHANCED (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_smartshift(
+    rctx:       *const PulsaarReceiverContext,
+    slot:       u8,
+    wheel_mode: u8,
+    torque:     u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_smart_shift(slot, wheel_mode, torque)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Read the host slot list for the device in the given slot.
+///
+/// If FEAT_CHANGE_HOST is absent, out->count is set to 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_hosts(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CHostList,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    // Zero the struct; CHostInfo arrays are large so zeroing explicitly is cleaner.
+    let out_ref = &mut *out;
+    out_ref.count = 0;
+    for i in 0..8 {
+        out_ref.hosts[i] = CHostInfo { slot: 0, name: [0u8; 64], is_active: 0 };
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_hosts(slot)));
+    match result {
+        Ok(Ok(Some(hosts))) => {
+            let count = hosts.len().min(8);
+            out_ref.count = count as u8;
+            for (i, h) in hosts.iter().take(8).enumerate() {
+                out_ref.hosts[i].slot      = h.slot;
+                out_ref.hosts[i].name      = str_to_buf(&h.name);
+                out_ref.hosts[i].is_active = if h.is_active { 1 } else { 0 };
+            }
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Switch the active host for the device in the given slot.
+///
+/// The device will disconnect immediately after receiving this command.
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_active_host(
+    rctx:      *const PulsaarReceiverContext,
+    slot:      u8,
+    host_slot: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_active_host(slot, host_slot)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Read FN key inversion state for the device in the given slot.
+///
+/// If no FN inversion feature is present, out->fn_swapped is set to 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_fn_settings(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CFnSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    *out = CFnSettings { has_feature: 0, fn_swapped: 0 };
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_fn_settings(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            (*out).has_feature = 1;
+            (*out).fn_swapped  = if info.fn_swapped { 1 } else { 0 };
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set FN key inversion for the device in the given slot.
+///
+/// swapped: 1 to make F1-F12 act as multimedia keys by default, 0 for standard function keys.
+/// Returns Ok if the device does not support any FN inversion feature (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_fn_swap(
+    rctx:    *const PulsaarReceiverContext,
+    slot:    u8,
+    swapped: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_fn_swap(slot, swapped != 0)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Read multiplatform OS layout state for the device in the given slot.
+///
+/// If the feature is absent or the device cannot change OS, out->count is 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_multiplatform(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CMultiplatformSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let out_ref = &mut *out;
+    out_ref.count   = 0;
+    out_ref.current = 0;
+    for i in 0..8 {
+        out_ref.platform_names[i]   = [0u8; 32];
+        out_ref.platform_indices[i] = 0;
+    }
+
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_multiplatform(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            let count = info.platforms.len().min(8);
+            out_ref.count   = count as u8;
+            // Find which platforms entry has index == info.current.
+            let current_pos = info.platforms.iter().position(|p| p.index == info.current).unwrap_or(0);
+            out_ref.current = current_pos as u8;
+            for (i, p) in info.platforms.iter().take(8).enumerate() {
+                out_ref.platform_names[i]   = str_to_buf(&p.name);
+                out_ref.platform_indices[i] = p.index;
+            }
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set the active OS platform for the device in the given slot.
+///
+/// platform_index: the raw platform index from CMultiplatformSettings.platform_indices[n].
+/// Returns Ok if the device does not support FEAT_MULTIPLATFORM (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_multiplatform(
+    rctx:           *const PulsaarReceiverContext,
+    slot:           u8,
+    platform_index: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_multiplatform(slot, platform_index)));
+    match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
+/// Read backlight state for the device in the given slot.
+///
+/// If FEAT_BACKLIGHT2 is absent, out->mode is set to 0 and Ok is returned.
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_backlight(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CBacklightSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    *out = CBacklightSettings { has_feature: 0, mode: 0, auto_supported: 0, manual_supported: 0, brightness: 0 };
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_backlight(slot)));
+    match result {
+        Ok(Ok(Some(info))) => {
+            (*out).has_feature      = 1;
+            (*out).mode             = info.mode;
+            (*out).auto_supported   = if info.auto_supported   { 1 } else { 0 };
+            (*out).manual_supported = if info.manual_supported { 1 } else { 0 };
+            (*out).brightness       = info.level;
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(None)) => PulsaarStatus::Ok,
+        Ok(Err(e))   => PulsaarStatus::from(e),
+        Err(_)       => PulsaarStatus::Unknown,
+    }
+}
+
+/// Set backlight mode and brightness for the device in the given slot.
+///
+/// mode:       0=disabled, 1=automatic, 3=manual.
+/// brightness: 0-100 (used only when mode=3).
+/// Returns Ok if the device does not support FEAT_BACKLIGHT2 (no-op).
+/// Returns InvalidArg if rctx is null or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_backlight(
+    rctx:       *const PulsaarReceiverContext,
+    slot:       u8,
+    mode:       u8,
+    brightness: u8,
+) -> PulsaarStatus {
+    if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_backlight(slot, mode, brightness)));
     match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
         Ok(Err(e)) => PulsaarStatus::from(e),

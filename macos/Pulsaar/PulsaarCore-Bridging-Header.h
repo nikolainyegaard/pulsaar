@@ -258,3 +258,86 @@ PulsaarStatus pulsaar_get_scroll_settings(const struct PulsaarReceiverContext *r
 // inverted: 1 to invert, 0 to not invert. hires_enabled: 1 to enable hi-res, 0 to disable.
 // Returns InvalidArg if rctx is null or slot is 0.
 PulsaarStatus pulsaar_set_scroll_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t inverted, uint8_t hires_enabled);
+
+// ---------------------------------------------------------------------------
+// Device settings: SmartShift, Change Host, FN swap, Multiplatform, Backlight
+// ---------------------------------------------------------------------------
+
+// SmartShift ratchet state (FEAT_SMART_SHIFT_ENHANCED 0x2111).
+// wheel_mode: 1=freespin, 2=smart-shift. has_torque: 1 if tunable. torque: 1-100.
+typedef struct {
+    uint8_t wheel_mode;
+    uint8_t has_torque;
+    uint8_t torque;
+} CSmartShiftSettings;
+
+// Info about one host slot.
+// slot: 0-based index. name: null-terminated. is_active: 1 if currently active.
+typedef struct {
+    uint8_t slot;
+    uint8_t name[64];
+    uint8_t is_active;
+} CHostInfo;
+
+// List of host slots returned by pulsaar_get_hosts.
+typedef struct {
+    uint8_t  count;
+    CHostInfo hosts[8];
+} CHostList;
+
+// FN key inversion state (FEAT_FN_INVERSION / NEW_FN_INVERSION / K375S_FN_INVERSION).
+// has_feature: 1 if the device has any FN inversion feature. fn_swapped: 1 if F1-F12 act as multimedia keys.
+typedef struct {
+    uint8_t has_feature;
+    uint8_t fn_swapped;
+} CFnSettings;
+
+// Multiplatform OS layout state (FEAT_MULTIPLATFORM 0x4531).
+// count: number of valid entries. current: index of active platform in arrays.
+// platform_names: null-terminated OS name strings. platform_indices: raw platform index values.
+typedef struct {
+    uint8_t count;
+    uint8_t current;
+    uint8_t platform_names[8][32];
+    uint8_t platform_indices[8];
+} CMultiplatformSettings;
+
+// Backlight state (FEAT_BACKLIGHT2 0x1982).
+// has_feature: 1 if the device has FEAT_BACKLIGHT2. mode: 0=disabled, 1=automatic, 3=manual. brightness: 0-100 (mode=3 only).
+typedef struct {
+    uint8_t has_feature;
+    uint8_t mode;
+    uint8_t auto_supported;
+    uint8_t manual_supported;
+    uint8_t brightness;
+} CBacklightSettings;
+
+// Read smart-shift ratchet mode and torque. out->wheel_mode=0 if feature absent.
+PulsaarStatus pulsaar_get_smartshift(const struct PulsaarReceiverContext *rctx, uint8_t slot, CSmartShiftSettings *out);
+
+// Set smart-shift wheel mode (1=freespin, 2=smart-shift) and torque (1-100).
+PulsaarStatus pulsaar_set_smartshift(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t wheel_mode, uint8_t torque);
+
+// Read the list of host slots. out->count=0 if feature absent.
+PulsaarStatus pulsaar_get_hosts(const struct PulsaarReceiverContext *rctx, uint8_t slot, CHostList *out);
+
+// Switch the active host. Device disconnects immediately; no reply expected.
+PulsaarStatus pulsaar_set_active_host(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t host_slot);
+
+// Read FN key inversion state. out->fn_swapped=0 if feature absent.
+PulsaarStatus pulsaar_get_fn_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, CFnSettings *out);
+
+// Set FN key swap. swapped=1 means F1-F12 act as multimedia keys.
+PulsaarStatus pulsaar_set_fn_swap(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t swapped);
+
+// Read multiplatform OS layout state. out->count=0 if feature absent.
+PulsaarStatus pulsaar_get_multiplatform(const struct PulsaarReceiverContext *rctx, uint8_t slot, CMultiplatformSettings *out);
+
+// Set the active OS platform. platform_index from CMultiplatformSettings.platform_indices[n].
+PulsaarStatus pulsaar_set_multiplatform(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t platform_index);
+
+// Read backlight state. out->mode=0 if feature absent.
+PulsaarStatus pulsaar_get_backlight(const struct PulsaarReceiverContext *rctx, uint8_t slot, CBacklightSettings *out);
+
+// Set backlight mode (0=off, 1=auto, 3=manual) and brightness (0-100, mode=3 only).
+PulsaarStatus pulsaar_set_backlight(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t mode, uint8_t brightness);

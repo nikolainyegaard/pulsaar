@@ -255,26 +255,94 @@ struct DirectDeviceModel: Identifiable {
 }
 
 // ---------------------------------------------------------------------------
+// Settings model enums and helpers
+// ---------------------------------------------------------------------------
+
+enum WheelMode: UInt8, CaseIterable {
+    case freespin  = 1
+    case smartShift = 2
+
+    var label: String {
+        switch self {
+        case .freespin:   return "Freespin"
+        case .smartShift: return "Smart Shift"
+        }
+    }
+}
+
+struct HostInfo: Identifiable {
+    let id: UInt8  // slot index
+    let name: String
+    let isActive: Bool
+}
+
+struct OSPlatform: Identifiable {
+    let id: UInt8       // raw platform_index from device
+    let name: String
+}
+
+enum BacklightMode: UInt8, CaseIterable {
+    case disabled  = 0
+    case automatic = 1
+    case manual    = 3
+
+    var label: String {
+        switch self {
+        case .disabled:  return "Off"
+        case .automatic: return "Automatic"
+        case .manual:    return "Always on"
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Settings model
 // ---------------------------------------------------------------------------
 
 struct DeviceSettingsModel {
-    // DPI
-    let dpiList:    [Int]   // empty if FEAT_ADJUSTABLE_DPI is absent
-    var currentDpi: Int     // 0 if not reported by device
+    // DPI (FEAT_ADJUSTABLE_DPI 0x2201)
+    let dpiList:    [Int]
+    var currentDpi: Int
     let defaultDpi: Int
 
-    // Scroll wheel
-    let hasInvert:    Bool
-    let hasHires:     Bool
+    // Scroll wheel (FEAT_HIRES_WHEEL 0x2121)
+    let hasInvert:      Bool
+    let hasHires:       Bool
     var scrollInverted: Bool
     var hiresEnabled:   Bool
 
-    var hasDpi: Bool           { !dpiList.isEmpty }
-    var hasScrollSettings: Bool { hasInvert || hasHires }
-    var hasAnySettings: Bool   { hasDpi || hasScrollSettings }
+    // SmartShift (FEAT_SMART_SHIFT_ENHANCED 0x2111)
+    var wheelMode:     WheelMode?
+    let hasTorque:     Bool
+    var smartShiftTorque: Int
 
-    init?(dpi: CDpiSettings, scroll: CScrollSettings) {
+    // Change Host (FEAT_CHANGE_HOST 0x1814)
+    var hosts: [HostInfo]?
+
+    // FN key swap (FEAT_FN_INVERSION family)
+    var fnSwapped: Bool?
+
+    // Multiplatform / Set OS (FEAT_MULTIPLATFORM 0x4531)
+    var platforms:     [OSPlatform]?
+    var currentOsIdx:  Int          // index into platforms array
+
+    // Backlight (FEAT_BACKLIGHT2 0x1982)
+    var backlightMode:       BacklightMode?
+    let backlightAutoSupported:   Bool
+    let backlightManualSupported: Bool
+    var backlightBrightness: Int
+
+    var hasDpi: Bool            { !dpiList.isEmpty }
+    var hasScrollSettings: Bool { hasInvert || hasHires }
+    var hasSmartShift: Bool     { wheelMode != nil }
+    var hasHosts: Bool          { !(hosts?.isEmpty ?? true) }
+    var hasFnSwap: Bool         { fnSwapped != nil }
+    var hasMultiplatform: Bool  { !(platforms?.isEmpty ?? true) }
+    var hasBacklight: Bool      { backlightMode != nil }
+    var hasAnySettings: Bool    { hasDpi || hasScrollSettings || hasSmartShift || hasHosts || hasFnSwap || hasMultiplatform || hasBacklight }
+
+    init?(dpi: CDpiSettings, scroll: CScrollSettings, smartShift: CSmartShiftSettings, hosts hostList: CHostList, fn fnSettings: CFnSettings, mp: CMultiplatformSettings, backlight bl: CBacklightSettings) {
+        // DPI
         if dpi.dpi_count > 0 {
             dpiList = withUnsafeBytes(of: dpi.dpi_list) { raw in
                 let words = raw.bindMemory(to: UInt16.self)
@@ -288,12 +356,74 @@ struct DeviceSettingsModel {
             defaultDpi = 0
         }
 
-        hasInvert     = scroll.has_invert    != 0
-        hasHires      = scroll.has_hires     != 0
-        scrollInverted = scroll.inverted     != 0
+        // Scroll wheel
+        hasInvert      = scroll.has_invert    != 0
+        hasHires       = scroll.has_hires     != 0
+        scrollInverted = scroll.inverted      != 0
         hiresEnabled   = scroll.hires_enabled != 0
 
-        // Return nil if neither feature is present so callers can show a "no settings" state.
+        // SmartShift
+        if smartShift.wheel_mode != 0 {
+            wheelMode        = WheelMode(rawValue: smartShift.wheel_mode) ?? .smartShift
+            hasTorque        = smartShift.has_torque != 0
+            smartShiftTorque = Int(smartShift.torque)
+        } else {
+            wheelMode        = nil
+            hasTorque        = false
+            smartShiftTorque = 50
+        }
+
+        // Hosts
+        if hostList.count > 0 {
+            hosts = withUnsafeBytes(of: hostList.hosts) { raw in
+                let arr = raw.bindMemory(to: CHostInfo.self)
+                return (0..<Int(hostList.count)).map { i in
+                    HostInfo(id: arr[i].slot, name: cBufToString(arr[i].name), isActive: arr[i].is_active != 0)
+                }
+            }
+        } else {
+            hosts = nil
+        }
+
+        // FN swap: nil means feature absent (has_feature=0); non-nil Bool is the actual state.
+        fnSwapped = fnSettings.has_feature != 0 ? (fnSettings.fn_swapped != 0) : nil
+
+        // Multiplatform
+        if mp.count >= 2 {
+            let count = Int(mp.count)
+            var platformList: [OSPlatform] = []
+            withUnsafeBytes(of: mp.platform_names) { rawNames in
+                withUnsafeBytes(of: mp.platform_indices) { rawIdx in
+                    let idxBytes = rawIdx.bindMemory(to: UInt8.self)
+                    for i in 0..<count {
+                        let nameStart = i * 32
+                        let nameSlice = rawNames[nameStart..<(nameStart + 32)]
+                        let nameStr = String(bytes: nameSlice.prefix(while: { $0 != 0 }), encoding: .utf8) ?? "Platform \(i+1)"
+                        platformList.append(OSPlatform(id: idxBytes[i], name: nameStr))
+                    }
+                }
+            }
+            platforms    = platformList
+            currentOsIdx = Int(mp.current)
+        } else {
+            platforms    = nil
+            currentOsIdx = 0
+        }
+
+        // Backlight: nil means feature absent (has_feature=0).
+        if bl.has_feature != 0 {
+            backlightMode            = BacklightMode(rawValue: bl.mode) ?? .disabled
+            backlightAutoSupported   = bl.auto_supported != 0
+            backlightManualSupported = bl.manual_supported != 0
+            backlightBrightness      = Int(bl.brightness)
+        } else {
+            backlightMode            = nil
+            backlightAutoSupported   = false
+            backlightManualSupported = false
+            backlightBrightness      = 0
+        }
+
+        // Nil when no settings at all.
         if !hasAnySettings { return nil }
     }
 }

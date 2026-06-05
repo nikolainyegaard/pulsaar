@@ -228,6 +228,72 @@ impl Receiver {
         let features = hidpp20::discover_features(&self.transport, slot)?;
         hidpp20::set_scroll_settings(&self.transport, slot, &features, inverted, hires_enabled)
     }
+
+    /// Read smart-shift ratchet mode and torque for the device in the given slot.
+    /// Returns None if the device does not support FEAT_SMART_SHIFT_ENHANCED (0x2111).
+    pub fn get_smart_shift(&self, slot: u8) -> crate::error::Result<Option<hidpp20::SmartShiftInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_smart_shift(&self.transport, slot, &features)
+    }
+
+    /// Set smart-shift wheel mode and torque for the device in the given slot.
+    pub fn set_smart_shift(&self, slot: u8, wheel_mode: u8, torque: u8) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_smart_shift(&self.transport, slot, &features, wheel_mode, torque)
+    }
+
+    /// Read the host slot list for the device in the given slot.
+    /// Returns None if the device does not support FEAT_CHANGE_HOST (0x1814).
+    pub fn get_hosts(&self, slot: u8) -> crate::error::Result<Option<Vec<hidpp20::HostInfo>>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_hosts(&self.transport, slot, &features)
+    }
+
+    /// Switch the active host for the device in the given slot.
+    /// The device will disconnect immediately; no reply is expected.
+    pub fn set_active_host(&self, slot: u8, host_slot: u8) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_active_host(&self.transport, slot, &features, host_slot)
+    }
+
+    /// Read FN key inversion state for the device in the given slot.
+    /// Returns None if the device does not support any FN inversion feature.
+    pub fn get_fn_settings(&self, slot: u8) -> crate::error::Result<Option<hidpp20::FnInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_fn_settings(&self.transport, slot, &features)
+    }
+
+    /// Set FN key inversion for the device in the given slot.
+    pub fn set_fn_swap(&self, slot: u8, swapped: bool) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_fn_swap(&self.transport, slot, &features, swapped)
+    }
+
+    /// Read multiplatform OS selection state for the device in the given slot.
+    /// Returns None if the device does not support FEAT_MULTIPLATFORM (0x4531) or cannot change OS.
+    pub fn get_multiplatform(&self, slot: u8) -> crate::error::Result<Option<hidpp20::MultiplatformInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_multiplatform(&self.transport, slot, &features)
+    }
+
+    /// Set the active OS platform for the device in the given slot.
+    pub fn set_multiplatform(&self, slot: u8, platform_index: u8) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_multiplatform(&self.transport, slot, &features, platform_index)
+    }
+
+    /// Read backlight state for the device in the given slot.
+    /// Returns None if the device does not support FEAT_BACKLIGHT2 (0x1982).
+    pub fn get_backlight(&self, slot: u8) -> crate::error::Result<Option<hidpp20::BacklightInfo>> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::get_backlight(&self.transport, slot, &features)
+    }
+
+    /// Set backlight mode and brightness for the device in the given slot.
+    pub fn set_backlight(&self, slot: u8, mode: u8, level: u8) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_backlight(&self.transport, slot, &features, mode, level)
+    }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {

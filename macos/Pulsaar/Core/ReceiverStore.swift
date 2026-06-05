@@ -353,9 +353,9 @@ final class ReceiverStore {
     // Device settings
     // ---------------------------------------------------------------------------
 
-    // Read DPI and scroll settings for a receiver-paired device.
-    // Opens the receiver, reads both features, and closes it.
-    // Returns nil if neither feature is present or the receiver cannot be opened.
+    // Read all Phase 1+2 settings for a receiver-paired device.
+    // Opens the receiver, reads all features, and closes it.
+    // Returns nil if no settings are present or the receiver cannot be opened.
     // This is a blocking call; run it on a background thread.
     func loadSettings(for device: DeviceModel) -> DeviceSettingsModel? {
         guard let ctx else { return nil }
@@ -363,12 +363,23 @@ final class ReceiverStore {
         guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return nil }
         defer { pulsaar_close_receiver(rctx) }
 
-        var dpiOut    = CDpiSettings()
-        var scrollOut = CScrollSettings()
+        var dpiOut       = CDpiSettings()
+        var scrollOut    = CScrollSettings()
+        var ssOut        = CSmartShiftSettings()
+        var hostsOut     = CHostList()
+        var fnOut        = CFnSettings()
+        var mpOut        = CMultiplatformSettings()
+        var blOut        = CBacklightSettings()
+
         pulsaar_get_dpi_settings(rctx, device.slot, &dpiOut)
         pulsaar_get_scroll_settings(rctx, device.slot, &scrollOut)
+        pulsaar_get_smartshift(rctx, device.slot, &ssOut)
+        pulsaar_get_hosts(rctx, device.slot, &hostsOut)
+        pulsaar_get_fn_settings(rctx, device.slot, &fnOut)
+        pulsaar_get_multiplatform(rctx, device.slot, &mpOut)
+        pulsaar_get_backlight(rctx, device.slot, &blOut)
 
-        return DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut)
+        return DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut, smartShift: ssOut, hosts: hostsOut, fn: fnOut, mp: mpOut, backlight: blOut)
     }
 
     // Set the active DPI for a device. Blocking; run on a background thread.
@@ -387,6 +398,51 @@ final class ReceiverStore {
         guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
         defer { pulsaar_close_receiver(rctx) }
         pulsaar_set_scroll_settings(rctx, device.slot, inverted ? 1 : 0, hires ? 1 : 0)
+    }
+
+    // Set smart-shift wheel mode (1=freespin, 2=smart-shift) and torque (1-100). Blocking.
+    func setSmartShift(for device: DeviceModel, wheelMode: UInt8, torque: UInt8) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_smartshift(rctx, device.slot, wheelMode, torque)
+    }
+
+    // Switch the active host for a device. The device disconnects immediately. Blocking.
+    func setActiveHost(for device: DeviceModel, hostSlot: UInt8) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_active_host(rctx, device.slot, hostSlot)
+    }
+
+    // Set FN key swap state (true = multimedia keys by default). Blocking.
+    func setFnSwap(for device: DeviceModel, swapped: Bool) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_fn_swap(rctx, device.slot, swapped ? 1 : 0)
+    }
+
+    // Set the active OS platform for a device. Blocking.
+    func setMultiplatform(for device: DeviceModel, platformIndex: UInt8) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_multiplatform(rctx, device.slot, platformIndex)
+    }
+
+    // Set backlight mode (0=off, 1=auto, 3=manual) and brightness. Blocking.
+    func setBacklight(for device: DeviceModel, mode: UInt8, brightness: UInt8) {
+        guard let ctx else { return }
+        var openStatus = PulsaarStatusUnknown
+        guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, device.receiverIndex, &openStatus) else { return }
+        defer { pulsaar_close_receiver(rctx) }
+        pulsaar_set_backlight(rctx, device.slot, mode, brightness)
     }
 
     // Prefetch settings for all paired devices across all receivers in the background.
@@ -415,8 +471,18 @@ final class ReceiverStore {
                         for device in receiver.devices {
                             var dpiOut    = CDpiSettings()
                             var scrollOut = CScrollSettings()
+                            var ssOut     = CSmartShiftSettings()
+                            var hostsOut  = CHostList()
+                            var fnOut     = CFnSettings()
+                            var mpOut     = CMultiplatformSettings()
+                            var blOut     = CBacklightSettings()
                             pulsaar_get_dpi_settings(rctx, device.slot, &dpiOut)
                             pulsaar_get_scroll_settings(rctx, device.slot, &scrollOut)
+                            pulsaar_get_smartshift(rctx, device.slot, &ssOut)
+                            pulsaar_get_hosts(rctx, device.slot, &hostsOut)
+                            pulsaar_get_fn_settings(rctx, device.slot, &fnOut)
+                            pulsaar_get_multiplatform(rctx, device.slot, &mpOut)
+                            pulsaar_get_backlight(rctx, device.slot, &blOut)
                             // Write scroll mode back after reading to clear the HIRES_WHEEL
                             // "target" bit (0x10). That bit, when set by other software, routes
                             // scroll events through the HID++ channel instead of standard HID,
@@ -424,7 +490,7 @@ final class ReceiverStore {
                             if scrollOut.has_hires != 0 || scrollOut.has_invert != 0 {
                                 pulsaar_set_scroll_settings(rctx, device.slot, scrollOut.inverted, scrollOut.hires_enabled)
                             }
-                            if let model = DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut) {
+                            if let model = DeviceSettingsModel(dpi: dpiOut, scroll: scrollOut, smartShift: ssOut, hosts: hostsOut, fn: fnOut, mp: mpOut, backlight: blOut) {
                                 batch[device.id] = model
                             }
                         }
