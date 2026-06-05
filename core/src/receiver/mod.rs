@@ -396,11 +396,14 @@ impl Receiver {
     /// Returns a PairingSession that must be passed to poll_pairing.
     /// timeout_secs: maximum time the receiver will wait for a device (0-255).
     pub fn start_pairing(&self, timeout_secs: u8) -> Result<PairingSession> {
-        // Enable wireless connection notifications so we receive pairing events.
+        // Set exactly WIRELESS | SOFTWARE_PRESENT for pairing notifications.
+        // Do not use flags | needed -- that preserves KEYBOARD_MULTIMEDIA_RAW and
+        // other flags left by Options+ that route key/button events to HID++ and
+        // away from standard USB HID.
+        let needed = hidpp10::NOTIF_WIRELESS | hidpp10::NOTIF_SOFTWARE_PRESENT;
         if let Ok(flags) = hidpp10::get_notification_flags(&self.transport) {
-            let needed = hidpp10::NOTIF_WIRELESS | hidpp10::NOTIF_SOFTWARE_PRESENT;
-            if flags & needed != needed {
-                let _ = hidpp10::set_notification_flags(&self.transport, flags | needed);
+            if flags != needed {
+                let _ = hidpp10::set_notification_flags(&self.transport, needed);
             }
         }
 
@@ -536,18 +539,29 @@ impl Receiver {
 
     /// Open a receiver dedicated to monitoring device connection-state events.
     ///
-    /// Sets NOTIF_WIRELESS so the receiver sends 0x41 notifications when a paired
-    /// device comes online or goes offline. Explicitly clears NOTIF_SOFTWARE_PRESENT:
-    /// when that flag is set, devices with SPECIAL_KEYS_BUTTONS (0x1B04) diversions
-    /// (e.g. media keys configured by Logitech Options+) route key events through
-    /// HID++ instead of standard USB HID. Since Pulsaar does not handle those events,
-    /// leaving SOFTWARE_PRESENT set causes the diverted keys to stop working at the OS.
+    /// Sets the receiver notification flags to NOTIF_WIRELESS only. This clears
+    /// every other flag that Options+ or another Logitech app may have left set,
+    /// specifically:
+    ///
+    ///   KEYBOARD_MULTIMEDIA_RAW (0x010000): when set, the receiver routes consumer-
+    ///     control keys (Mute, Volume, etc.) as HID++ notifications instead of standard
+    ///     USB HID reports. Pulsaar reads those reports on the vendor interface and
+    ///     discards them, so the OS never sees them and the keys stop working.
+    ///
+    ///   SOFTWARE_PRESENT (0x000800): when set, devices with SPECIAL_KEYS_BUTTONS
+    ///     (0x1B04) diversions route media/special key events through HID++ instead of
+    ///     standard USB HID. Pulsaar does not handle those events.
+    ///
+    ///   MOUSE_EXTRA_BUTTONS and others: same problem -- events routed to HID++ that
+    ///     Pulsaar does not handle are consumed and lost.
+    ///
+    /// Setting ONLY NOTIF_WIRELESS ensures that only device-link 0x41 notifications
+    /// reach the vendor interface. Everything else routes through standard USB HID.
     pub fn open_for_events(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
         let recv = Self::open(api, handle)?;
         if let Ok(flags) = hidpp10::get_notification_flags(&recv.transport) {
-            let desired = (flags | hidpp10::NOTIF_WIRELESS) & !hidpp10::NOTIF_SOFTWARE_PRESENT;
-            if flags != desired {
-                let _ = hidpp10::set_notification_flags(&recv.transport, desired);
+            if flags != hidpp10::NOTIF_WIRELESS {
+                let _ = hidpp10::set_notification_flags(&recv.transport, hidpp10::NOTIF_WIRELESS);
             }
         }
         Ok(recv)
