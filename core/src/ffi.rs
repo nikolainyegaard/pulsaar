@@ -23,6 +23,8 @@
 //   9.  pulsaar_close_receiver(rctx)
 //   10. pulsaar_destroy(ctx)
 
+use std::ffi::CStr;
+use std::os::raw::c_char;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use crate::devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
@@ -1162,6 +1164,36 @@ pub unsafe extern "C" fn pulsaar_set_active_host(
         Err(_)     => PulsaarStatus::Unknown,
     };
     eprintln!("[PULSAAR][FFI]   set_active_host -> {:?}", status as u32);
+    status
+}
+
+/// Write a hostname to the active host slot for the device in the given slot.
+///
+/// slot: 1-based device slot. host_slot: 0-based host index to write to.
+/// name: null-terminated UTF-8 string. Truncated to the device's maxNameLen.
+/// No-op (returns Ok) if FEAT_HOSTS_INFO is absent or writing is not supported.
+/// Returns InvalidArg if rctx or name is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_set_host_name(
+    rctx:      *const PulsaarReceiverContext,
+    slot:      u8,
+    host_slot: u8,
+    name:      *const c_char,
+) -> PulsaarStatus {
+    if rctx.is_null() || name.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+    let name_str = match CStr::from_ptr(name).to_str() {
+        Ok(s) => s,
+        Err(_) => return PulsaarStatus::InvalidArg,
+    };
+    eprintln!("[PULSAAR][FFI] pulsaar_set_host_name slot={} host_slot={} name={:?}", slot, host_slot, name_str);
+    let name_owned = name_str.to_owned();
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_host_name(slot, host_slot, &name_owned)));
+    let status = match result {
+        Ok(Ok(())) => PulsaarStatus::Ok,
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_host_name err: {:?}", e); PulsaarStatus::from(e) }
+        Err(_)     => PulsaarStatus::Unknown,
+    };
+    eprintln!("[PULSAAR][FFI]   set_host_name -> {:?}", status as u32);
     status
 }
 

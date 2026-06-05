@@ -64,6 +64,17 @@ final class ReceiverStore {
     /// True while prefetchSettings is running on a background thread.
     /// The settings task checks this to avoid racing to open the receiver concurrently.
     var isPrefetching = false
+    var toastMessage: String? = nil
+
+    @ObservationIgnored private var toastTimer: Timer? = nil
+
+    func showToast(_ message: String) {
+        toastMessage = message
+        toastTimer?.invalidate()
+        toastTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { [weak self] _ in
+            DispatchQueue.main.async { self?.toastMessage = nil }
+        }
+    }
 
     // OpaquePointer because PulsaarContext is a forward-declared (incomplete) C struct.
     // @ObservationIgnored because this pointer never needs to trigger SwiftUI updates.
@@ -540,6 +551,7 @@ final class ReceiverStore {
                 cached.currentDpi = dpi
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("DPI saved")
         }
     }
 
@@ -563,6 +575,7 @@ final class ReceiverStore {
                 cached.hiresEnabled = hires
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("Scroll settings saved")
         }
     }
 
@@ -586,6 +599,7 @@ final class ReceiverStore {
                 cached.smartShiftTorque = Int(torque)
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("Scroll mode saved")
         }
     }
 
@@ -611,6 +625,7 @@ final class ReceiverStore {
                 cached.hosts = hosts
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("Host changed")
         }
     }
 
@@ -633,6 +648,7 @@ final class ReceiverStore {
                 cached.fnSwapped = swapped
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("Function keys saved")
         }
     }
 
@@ -655,6 +671,7 @@ final class ReceiverStore {
                 cached.currentOsIdx = Int(platformIndex)
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("OS layout saved")
         }
     }
 
@@ -678,6 +695,7 @@ final class ReceiverStore {
                 cached.backlightBrightness = Int(brightness)
                 self.settingsCache[deviceId] = cached
             }
+            self.showToast("Backlight saved")
         }
     }
 
@@ -717,6 +735,20 @@ final class ReceiverStore {
                                 pLog("SETTINGS", "    writing scroll mode to clear HID++ target bit (inverted=\(allOut.scroll.inverted) hires=\(allOut.scroll.hires_enabled))")
                                 let sw = pulsaar_set_scroll_settings(rctx, device.slot, allOut.scroll.inverted, allOut.scroll.hires_enabled)
                                 pLog("SETTINGS", "    scroll write -> \(statusStr(sw))")
+                            }
+                            if allOut.hosts.count > 0 {
+                                let hostname = Host.current().localizedName ?? ProcessInfo.processInfo.hostName
+                                let activeSlot: UInt8 = withUnsafeBytes(of: allOut.hosts.hosts) { raw in
+                                    let arr = raw.bindMemory(to: CHostInfo.self)
+                                    for i in 0..<Int(allOut.hosts.count) {
+                                        if arr[i].is_active != 0 { return arr[i].slot }
+                                    }
+                                    return 0
+                                }
+                                hostname.withCString { cstr in
+                                    let sw = pulsaar_set_host_name(rctx, device.slot, activeSlot, cstr)
+                                    pLog("SETTINGS", "    hostname write '\(hostname)' host_slot=\(activeSlot) -> \(statusStr(sw))")
+                                }
                             }
                             if let model = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight, reprogControlsIdx: allOut.reprog_controls_idx) {
                                 batch[device.id] = model

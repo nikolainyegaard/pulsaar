@@ -326,6 +326,11 @@ PulsaarStatus pulsaar_get_hosts(const struct PulsaarReceiverContext *rctx, uint8
 // Switch the active host. Device disconnects immediately; no reply expected.
 PulsaarStatus pulsaar_set_active_host(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t host_slot);
 
+// Write a hostname to the given host slot. name must be a null-terminated UTF-8 string.
+// No-op if FEAT_HOSTS_INFO (0x1815) is absent or the device does not support name writes.
+// Returns InvalidArg if rctx or name is null, or slot is 0.
+PulsaarStatus pulsaar_set_host_name(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t host_slot, const char *name);
+
 // Read FN key inversion state. out->fn_swapped=0 if feature absent.
 PulsaarStatus pulsaar_get_fn_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, CFnSettings *out);
 

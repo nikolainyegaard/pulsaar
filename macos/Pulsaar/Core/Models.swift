@@ -48,6 +48,14 @@ enum ReceiverKind {
         default: return "antenna.radiowaves.left.and.right"
         }
     }
+
+    var customImageName: String? {
+        switch self {
+        case .bolt: return "bolt"
+        case .unifying: return "unifying"
+        default: return nil
+        }
+    }
 }
 
 enum DeviceKind {

@@ -139,6 +139,62 @@ fn main() {
                 println!("    HIRES_WHEEL (0x2121) NOT in feature table");
             }
 
+            // Step 4: probe HOSTS_INFO (0x1815) if present.
+            if let Some(&hi_idx) = features.get(&hidpp20::FEAT_HOSTS_INFO) {
+                println!("    --- HOSTS_INFO (0x1815) at feature index {hi_idx} ---");
+                // fn 0: GetHostsInfo -> [cap_flags, _, numHosts, currentHost, ...]
+                match hidpp20::feature_call(transport, dev.slot, hi_idx, 0, &[]) {
+                    Ok(reply) => {
+                        let p = reply.params();
+                        print!("      fn0 (GetHostsInfo) raw: "); for b in p { print!("{b:02X} "); } println!();
+                        let cap_flags    = p.first().copied().unwrap_or(0);
+                        let num_hosts    = p.get(2).copied().unwrap_or(0);
+                        let current_host = p.get(3).copied().unwrap_or(0);
+                        println!("      cap_flags=0x{cap_flags:02X} (can_read_names={} can_write_names={})",
+                            (cap_flags & 0x01) != 0, (cap_flags & 0x02) != 0);
+                        println!("      numHosts={num_hosts} currentHost={current_host}");
+                        for slot in 0..num_hosts {
+                            // fn 1: GetHostInfo -> [_, status, _, _, nameLen, maxNameLen, ...]
+                            match hidpp20::feature_call(transport, dev.slot, hi_idx, 1, &[slot]) {
+                                Ok(info) => {
+                                    let ip = info.params();
+                                    print!("      slot {slot} fn1 raw: "); for b in ip { print!("{b:02X} "); } println!();
+                                    let status      = ip.get(1).copied().unwrap_or(0);
+                                    let name_len    = ip.get(4).copied().unwrap_or(0);
+                                    let max_name_len = ip.get(5).copied().unwrap_or(0);
+                                    println!("        status=0x{status:02X} (paired={}) nameLen={name_len} maxNameLen={max_name_len}",
+                                        status != 0);
+                                    // fn 3: GetHostName -> [_, _, name_bytes...] (14 bytes per chunk)
+                                    if (cap_flags & 0x01) != 0 && name_len > 0 {
+                                        let mut name = String::new();
+                                        let mut offset: u8 = 0;
+                                        let mut remaining = name_len as usize;
+                                        while remaining > 0 {
+                                            match hidpp20::feature_call(transport, dev.slot, hi_idx, 3, &[slot, offset]) {
+                                                Ok(nr) => {
+                                                    let np = nr.params();
+                                                    let chunk = &np[2..np.len().min(2 + remaining.min(14))];
+                                                    name.push_str(&String::from_utf8_lossy(chunk).trim_end_matches('\0'));
+                                                    let got = chunk.len();
+                                                    remaining = remaining.saturating_sub(got);
+                                                    offset += got as u8;
+                                                }
+                                                Err(e) => { println!("        GetHostName chunk failed: {e}"); break; }
+                                            }
+                                        }
+                                        println!("        stored name: {:?}", name);
+                                    }
+                                }
+                                Err(e) => println!("      slot {slot} GetHostInfo failed: {e}"),
+                            }
+                        }
+                    }
+                    Err(e) => println!("      fn0 GetHostsInfo failed: {e}"),
+                }
+            } else {
+                println!("    HOSTS_INFO (0x1815) NOT in feature table");
+            }
+
             // Also check 0x2120 (HI_RES_SCROLLING, older feature code).
             let feat_2120: u16 = 0x2120;
             if let Some(&idx) = features.get(&feat_2120) {

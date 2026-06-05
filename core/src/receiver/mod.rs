@@ -281,6 +281,13 @@ impl Receiver {
         hidpp20::set_active_host(&self.transport, slot, &features, host_slot)
     }
 
+    /// Write the given name to a host slot for the device.
+    /// No-op if FEAT_HOSTS_INFO (0x1815) is absent or the device does not support name writes.
+    pub fn set_host_name(&self, slot: u8, host_slot: u8, name: &str) -> crate::error::Result<()> {
+        let features = hidpp20::discover_features(&self.transport, slot)?;
+        hidpp20::set_host_name(&self.transport, slot, &features, host_slot, name)
+    }
+
     /// Read FN key inversion state for the device in the given slot.
     /// Returns None if the device does not support any FN inversion feature.
     pub fn get_fn_settings(&self, slot: u8) -> crate::error::Result<Option<hidpp20::FnInfo>> {

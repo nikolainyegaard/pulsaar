@@ -590,12 +590,19 @@ fn read_host_name(transport: &Transport, device: u8, hi_idx: u8, slot: u8) -> Re
         return Ok(format!("Host {}", slot + 1));
     }
 
-    // GetHostName (fn 3): params=[slot, 0] -> [_, _, name_bytes...]
-    let name_reply = feature_call(transport, device, hi_idx, 3, &[slot, 0])?;
-    let np = name_reply.params();
-    let end = 2 + name_len.min(np.len().saturating_sub(2));
-    let name_bytes = if end > 2 { &np[2..end] } else { &np[2..] };
-    Ok(String::from_utf8_lossy(name_bytes).trim_end_matches('\0').to_owned())
+    // GetHostName (fn 3): params=[slot, offset] -> [slot_echo, offset_echo, name_bytes (up to 14)]
+    // Names longer than 14 bytes require multiple requests at increasing offsets.
+    let mut name_bytes: Vec<u8> = Vec::with_capacity(name_len);
+    while name_bytes.len() < name_len {
+        let offset = name_bytes.len();
+        let reply = feature_call(transport, device, hi_idx, 3, &[slot, offset as u8])?;
+        let np = reply.params();
+        let chunk = if np.len() > 2 { &np[2..] } else { break };
+        let take = (name_len - name_bytes.len()).min(chunk.len());
+        if take == 0 { break; }
+        name_bytes.extend_from_slice(&chunk[..take]);
+    }
+    Ok(String::from_utf8_lossy(&name_bytes).trim_end_matches('\0').to_owned())
 }
 
 /// Switch the active host using FEAT_CHANGE_HOST (0x1814).
@@ -617,6 +624,56 @@ pub fn set_active_host(
     };
     eprintln!("[PULSAAR][HIDPP20] set_active_host dev=0x{:02X} host_slot={} (device disconnects immediately)", device, host_slot);
     let _ = feature_call(transport, device, idx, 1, &[host_slot]);
+    Ok(())
+}
+
+/// Write a hostname to the given host slot using FEAT_HOSTS_INFO (0x1815).
+///
+/// SetHostName (fn 4): params=[host_slot, offset, name_bytes (up to 14 per call)].
+/// cap_flags bit 1 (0x02) = can write host names; skips silently if not set.
+/// maxNameLen at GetHostInfo (fn 1) reply byte 5; name is truncated to that length.
+pub fn set_host_name(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+    host_slot: u8,
+    name: &str,
+) -> Result<()> {
+    let hi_idx = match features.get(&FEAT_HOSTS_INFO) {
+        Some(&i) => i,
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_host_name dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
+    };
+
+    // GetHostsInfo (fn 0): check cap_flags bit 1 (can write)
+    let caps = feature_call(transport, device, hi_idx, 0, &[])?;
+    if (caps.params().first().copied().unwrap_or(0) & 0x02) == 0 {
+        eprintln!("[PULSAAR][HIDPP20] set_host_name dev=0x{:02X}: device does not support name writes", device);
+        return Ok(());
+    }
+
+    // GetHostInfo (fn 1): maxNameLen at reply byte 5
+    let info = feature_call(transport, device, hi_idx, 1, &[host_slot])?;
+    let max_name_len = info.params().get(5).copied().unwrap_or(24) as usize;
+
+    let name_bytes = name.as_bytes();
+    let write_len = name_bytes.len().min(max_name_len);
+
+    eprintln!("[PULSAAR][HIDPP20] set_host_name dev=0x{:02X} host_slot={} name={:?} ({} bytes, max={})",
+        device, host_slot, name, write_len, max_name_len);
+
+    // SetHostName (fn 4): params=[host_slot, offset, name_bytes (up to 14 per call)]
+    let mut offset = 0;
+    while offset < write_len {
+        let chunk_size = (write_len - offset).min(14);
+        let mut params = vec![host_slot, offset as u8];
+        params.extend_from_slice(&name_bytes[offset..offset + chunk_size]);
+        feature_call(transport, device, hi_idx, 4, &params)?;
+        offset += chunk_size;
+    }
+
     Ok(())
 }
 

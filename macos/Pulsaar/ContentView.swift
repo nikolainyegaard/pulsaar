@@ -3,6 +3,7 @@ import AppKit
 
 // Sidebar selection: a receiver row, a receiver-hosted device row, or a direct BT device row.
 enum SidebarItem: Hashable {
+    case bluetooth
     case receiver(Int)
     case device(String)        // DeviceModel.id ("receiverIndex-slot")
     case directDevice(String)  // DirectDeviceModel.id (serial or "direct-<pid>")
@@ -19,6 +20,14 @@ struct ContentView: View {
         } detail: {
             detailPane
                 .navigationSplitViewColumnWidth(min: 320, ideal: 480)
+                .overlay(alignment: .bottom) {
+                    if let msg = store.toastMessage {
+                        ToastView(message: msg)
+                            .padding(.bottom, 24)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.2), value: store.toastMessage)
         }
     }
 
@@ -37,10 +46,15 @@ struct ContentView: View {
                 Label("No devices found", systemImage: "antenna.radiowaves.left.and.right")
                     .foregroundStyle(.secondary)
             } else {
-                // Direct (Bluetooth) devices at the top level, no tree lines.
-                ForEach(store.directDevices) { device in
-                    DirectDeviceSidebarRow(device: device)
-                        .tag(SidebarItem.directDevice(device.id))
+                // Direct (Bluetooth) devices parented under a Bluetooth row.
+                if !store.directDevices.isEmpty {
+                    BluetoothSidebarRow()
+                        .tag(SidebarItem.bluetooth)
+                    ForEach(Array(store.directDevices.enumerated()), id: \.element.id) { index, device in
+                        DirectDeviceSidebarRow(device: device, isLast: index == store.directDevices.count - 1)
+                            .tag(SidebarItem.directDevice(device.id))
+                            .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
+                    }
                 }
 
                 // Receivers with their paired devices indented beneath.
@@ -65,6 +79,8 @@ struct ContentView: View {
     @ViewBuilder
     private var detailPane: some View {
         switch selection {
+        case .bluetooth:
+            BluetoothDetailView(devices: store.directDevices, selection: $selection)
         case .device(let id):
             if let device = findDevice(id: id) {
                 DeviceDetailView(device: device)
@@ -101,6 +117,22 @@ struct ContentView: View {
     }
 }
 
+// MARK: - Toast
+
+private struct ToastView: View {
+    let message: String
+
+    var body: some View {
+        Label(message, systemImage: "checkmark.circle.fill")
+            .font(.subheadline)
+            .symbolRenderingMode(.multicolor)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+    }
+}
+
 // MARK: - Receiver sidebar row
 
 struct ReceiverSidebarRow: View {
@@ -111,7 +143,36 @@ struct ReceiverSidebarRow: View {
             Text(receiver.name)
                 .fontWeight(.medium)
         } icon: {
-            Image(systemName: receiver.kind.systemImage)
+            if let name = receiver.kind.customImageName {
+                Image(name)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+            } else {
+                Image(systemName: receiver.kind.systemImage)
+            }
+        }
+    }
+}
+
+// MARK: - Bluetooth sidebar row
+
+struct BluetoothSidebarRow: View {
+    private var hostName: String {
+        Host.current().localizedName ?? "Bluetooth"
+    }
+
+    var body: some View {
+        Label {
+            Text(hostName)
+                .fontWeight(.medium)
+        } icon: {
+            Image("bluetooth")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 16, height: 16)
         }
     }
 }
@@ -887,10 +948,20 @@ private struct ReceiverHeader: View {
 
     var body: some View {
         HStack(spacing: 20) {
-            Image(systemName: receiver.kind.systemImage)
-                .font(.system(size: 44))
-                .foregroundStyle(.primary)
-                .frame(width: 56, height: 56)
+            if let name = receiver.kind.customImageName {
+                Image(name)
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(.primary)
+                    .frame(width: 44, height: 44)
+                    .frame(width: 56, height: 56)
+            } else {
+                Image(systemName: receiver.kind.systemImage)
+                    .font(.system(size: 44))
+                    .foregroundStyle(.primary)
+                    .frame(width: 56, height: 56)
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(receiver.name)
@@ -994,18 +1065,114 @@ struct ReceiverDetailView: View {
     }
 }
 
+// MARK: - Bluetooth header
+
+private struct BluetoothHeader: View {
+    let deviceCount: Int
+
+    private var hostName: String {
+        Host.current().localizedName ?? "Bluetooth"
+    }
+
+    var body: some View {
+        HStack(spacing: 20) {
+            Image("bluetooth")
+                .renderingMode(.template)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 44, height: 44)
+                .foregroundStyle(.primary)
+                .frame(width: 56, height: 56)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(hostName)
+                    .font(.title2)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Text("\(deviceCount) device\(deviceCount == 1 ? "" : "s") paired via Bluetooth")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.secondary)
+    }
+}
+
+// MARK: - Bluetooth detail
+
+struct BluetoothDetailView: View {
+    let devices: [DirectDeviceModel]
+    @Binding var selection: SidebarItem?
+
+    private var hostName: String {
+        Host.current().localizedName ?? "Bluetooth"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            BluetoothHeader(deviceCount: devices.count)
+            Divider()
+            List {
+                Section("Paired devices") {
+                    ForEach(devices) { device in
+                        Button {
+                            selection = .directDevice(device.id)
+                        } label: {
+                            HStack {
+                                Label(device.name, systemImage: device.kind.systemImage)
+                                Spacer()
+                                Text(device.isOnline ? "Online" : "Offline")
+                                    .font(.caption)
+                                    .foregroundStyle(device.isOnline ? .green : .secondary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption)
+                                    .foregroundStyle(.tertiary)
+                            }
+                            .opacity(device.isOnline ? 1.0 : 0.5)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if devices.isEmpty {
+                        Text("No devices paired")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            Divider()
+            Button {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings")!)
+            } label: {
+                Label("Open Bluetooth Settings", systemImage: "arrow.up.right.square")
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .padding()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .navigationTitle(hostName)
+    }
+}
+
 // MARK: - Direct device sidebar row
 
 struct DirectDeviceSidebarRow: View {
     let device: DirectDeviceModel
+    let isLast: Bool
 
     var body: some View {
-        HStack {
+        HStack(spacing: 0) {
+            TreeConnector(isLast: isLast)
+                .frame(width: 28)
             Label {
                 Text(device.name)
-                    .fontWeight(.medium)
             } icon: {
                 Image(systemName: device.kind.systemImage)
+                    .foregroundStyle(.primary)
             }
 
             Spacer()
