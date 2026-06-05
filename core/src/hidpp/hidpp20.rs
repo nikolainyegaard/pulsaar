@@ -26,6 +26,7 @@ pub const FEAT_NEW_FN_INVERSION: u16    = 0x40A2;
 pub const FEAT_K375S_FN_INVERSION: u16  = 0x40A3;
 pub const FEAT_MULTIPLATFORM: u16       = 0x4531;
 pub const FEAT_BACKLIGHT2: u16          = 0x1982;
+pub const FEAT_REPROG_CONTROLS: u16     = 0x1B04;
 
 /// DPI capabilities and current state for a device with FEAT_ADJUSTABLE_DPI.
 pub struct DpiInfo {
@@ -928,4 +929,70 @@ pub fn get_firmware(
     }
 
     Ok(result)
+}
+
+// -- REPROG_CONTROLS_V4 (0x1B04) ----------------------------------------------
+
+/// Clear all temporarily-diverted controls on REPROG_CONTROLS_V4 (0x1B04).
+///
+/// Options+ writes per-button diversions to device RAM. When a button is diverted
+/// and Pulsaar's event listener has the receiver open, the CID notification arrives
+/// via HID++, Pulsaar reads and discards it, and the button has no effect (e.g.
+/// SmartShift toggle, media keys). This is separate from the receiver-level
+/// KEYBOARD_MULTIMEDIA_RAW flag: that flag routes media events through the
+/// receiver; 0x1B04 diversions are per-button, stored in the device itself.
+///
+/// GetCapabilityCount (fn 0): no params; response[0] = count.
+/// GetCapability (fn 1): params=[index]; response[0:2] = CID (big-endian).
+/// GetKeyReporting (fn 2): params=[CID_hi, CID_lo]; response[2] = flags
+///   (bit 0x01 = DIVERTED, temporarily diverted to host).
+/// SetKeyReporting (fn 3): params=[CID_hi, CID_lo, flags_byte, remap_hi, remap_lo];
+///   flags_byte=0x02 clears DIVERTED (bit 0 = 0, bit 1 = valid-bit = 1).
+///
+/// Only temporarily-diverted buttons are touched. Persistent remaps (bit 0x04)
+/// are left untouched.
+pub fn clear_reprog_controls_diversions(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+) -> Result<()> {
+    let idx = match features.get(&FEAT_REPROG_CONTROLS) {
+        Some(&i) => i,
+        None => return Ok(()),
+    };
+
+    let count_reply = feature_call(transport, device, idx, 0, &[])?;
+    let count = count_reply.params().first().copied().unwrap_or(0);
+    eprintln!("[PULSAAR][HIDPP20] dev=0x{:02X} clear_reprog_controls_diversions: {} control(s)", device, count);
+
+    for i in 0..count {
+        let cap_reply = match feature_call(transport, device, idx, 1, &[i]) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let p = cap_reply.params();
+        let cid = u16::from_be_bytes([
+            p.first().copied().unwrap_or(0),
+            p.get(1).copied().unwrap_or(0),
+        ]);
+
+        let get_reply = match feature_call(transport, device, idx, 2, &[(cid >> 8) as u8, cid as u8]) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let mapping_flags = get_reply.params().get(2).copied().unwrap_or(0);
+
+        if mapping_flags & 0x01 != 0 {
+            // DIVERTED flag is set; clear it.
+            // flags_byte = 0x02: bit 0 (DIVERTED value) = 0, bit 1 (DIVERTED valid) = 1.
+            let _ = feature_call(transport, device, idx, 3, &[
+                (cid >> 8) as u8, cid as u8,
+                0x02, // clear DIVERTED
+                0x00, 0x00, // no remap change
+            ]);
+            eprintln!("[PULSAAR][HIDPP20]   cleared diversion for CID 0x{:04X}", cid);
+        }
+    }
+
+    Ok(())
 }

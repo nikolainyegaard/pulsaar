@@ -170,8 +170,16 @@ final class ReceiverStore {
     private func scheduleUSBConnectReload() {
         pendingUSBConnectReload?.cancel()
         let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // If prefetch is still running it holds the receiver open; opening it again
+            // here would fail with exclusive-access and wipe the receiver list. Skip --
+            // prefetch will call restartEventListeners when it finishes.
+            guard !self.isPrefetching else {
+                pLog("USB", "USB connect reload firing -- skipped, prefetch running")
+                return
+            }
             pLog("USB", "USB connect reload firing")
-            self?.reload()
+            self.reload()
         }
         pendingUSBConnectReload = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)

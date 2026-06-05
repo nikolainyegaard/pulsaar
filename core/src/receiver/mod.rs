@@ -313,6 +313,11 @@ impl Receiver {
     /// Individual feature errors are treated as absent (None) rather than propagated.
     pub fn get_all_settings(&self, slot: u8) -> crate::error::Result<AllDeviceSettings> {
         let features     = hidpp20::discover_features(&self.transport, slot)?;
+        // Clear any 0x1B04 (REPROG_CONTROLS_V4) temporary diversions set by Options+.
+        // Diverted buttons send CID events via HID++ that Pulsaar reads and discards,
+        // making the physical buttons inert (SmartShift toggle, etc.). Clearing here
+        // restores firmware-default behavior while the receiver is open for settings.
+        let _ = hidpp20::clear_reprog_controls_diversions(&self.transport, slot, &features);
         let dpi          = hidpp20::get_dpi_info(&self.transport, slot, &features).unwrap_or(None);
         let scroll       = hidpp20::get_scroll_info(&self.transport, slot, &features).unwrap_or(None);
         let smart_shift  = hidpp20::get_smart_shift(&self.transport, slot, &features).unwrap_or(None);
