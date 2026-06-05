@@ -498,8 +498,6 @@ private struct DeviceSettingsPanel: View {
     @State private var currentOsIdx: Int = 0
     @State private var backlightMode: BacklightMode = .disabled
     @State private var backlightBrightness: Int = 50
-    // UI
-    @State private var advancedExpanded: Bool = false
 
     var body: some View {
         Group {
@@ -731,12 +729,8 @@ private struct DeviceSettingsPanel: View {
                         }
                     )) {
                         Text(BacklightMode.disabled.label).tag(BacklightMode.disabled)
-                        if s.backlightAutoSupported {
-                            Text(BacklightMode.automatic.label).tag(BacklightMode.automatic)
-                        }
-                        if s.backlightManualSupported {
-                            Text(BacklightMode.manual.label).tag(BacklightMode.manual)
-                        }
+                        Text(BacklightMode.automatic.label).tag(BacklightMode.automatic)
+                        Text(BacklightMode.manual.label).tag(BacklightMode.manual)
                     }
                     if backlightMode == .manual {
                         VStack(alignment: .leading, spacing: 6) {
@@ -785,33 +779,28 @@ private struct DeviceSettingsPanel: View {
                 }
             }
 
-            // Advanced Options: torque tuning when SmartShift mode is active
+            // Advanced Options: torque tuning when Ratchet mode is active
             if hasAdvanced {
-                Section {
-                    DisclosureGroup("Advanced Options", isExpanded: $advancedExpanded) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack {
-                                Text("Ratchet threshold")
-                                Spacer()
-                                Text("\(smartShiftTorque)%")
-                                    .monospacedDigit()
-                                    .foregroundStyle(.secondary)
-                            }
-                            Slider(
-                                value: Binding(
-                                    get: { Double(smartShiftTorque) },
-                                    set: { smartShiftTorque = Int($0) }
-                                ),
-                                in: 1...100,
-                                step: 1,
-                                onEditingChanged: { editing in
-                                    if !editing {
-                                        writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
-                                    }
+                Section("Advanced Options") {
+                    HStack(spacing: 12) {
+                        Text("Ratchet threshold")
+                        Slider(
+                            value: Binding(
+                                get: { Double(smartShiftTorque) },
+                                set: { smartShiftTorque = Int($0) }
+                            ),
+                            in: 1...100,
+                            step: 1,
+                            onEditingChanged: { editing in
+                                if !editing {
+                                    writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
                                 }
-                            )
-                        }
-                        .listRowSeparator(.hidden)
+                            }
+                        )
+                        Text("\(smartShiftTorque)%")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
                     }
                 }
             }

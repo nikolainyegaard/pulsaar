@@ -155,6 +155,69 @@ fn main() {
             } else {
                 println!("    HI_RES_SCROLLING (0x2120) NOT in feature table");
             }
+
+            // Probe FN inversion features.
+            for &(feat_id, label) in &[
+                (hidpp20::FEAT_NEW_FN_INVERSION, "NEW_FN_INVERSION (0x40A2)"),
+                (hidpp20::FEAT_FN_INVERSION,     "FN_INVERSION (0x40A0)"),
+                (hidpp20::FEAT_K375S_FN_INVERSION,"K375S_FN_INVERSION (0x40A3)"),
+            ] {
+                if let Some(&idx) = features.get(&feat_id) {
+                    println!("    --- {label} at feature index {idx} ---");
+                    match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                        Ok(reply) => {
+                            let p = reply.params();
+                            print!("      GetFnInversionState raw params: ");
+                            for b in p { print!("{b:02X} "); }
+                            println!();
+                            if !p.is_empty() {
+                                println!("      fn_swapped={} default_fn_swapped={}",
+                                    (p[0] & 0x01) != 0,
+                                    p.get(1).map_or(false, |&b| (b & 0x01) != 0));
+                            }
+                        }
+                        Err(e) => println!("      GetFnInversionState failed: {e}"),
+                    }
+                } else {
+                    println!("    {label} NOT in feature table");
+                }
+            }
+
+            // Probe backlight features.
+            for &(feat_id, label) in &[
+                (hidpp20::FEAT_BACKLIGHT2, "BACKLIGHT2 (0x1982)"),
+                (0x6020u16,               "BACKLIGHT2-ALT (0x6020)"),
+                (0x1981u16,               "BACKLIGHT (0x1981)"),
+            ] {
+                if let Some(&idx) = features.get(&feat_id) {
+                    println!("    --- {label} at feature index {idx} ---");
+                    match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                        Ok(reply) => {
+                            let p = reply.params();
+                            print!("      GetBacklightState raw params ({} bytes): ", p.len());
+                            for b in p { print!("{b:02X} "); }
+                            println!();
+                            if p.len() >= 6 {
+                                let enabled   = p[0];
+                                let options   = p[1];
+                                let supported = p[2];
+                                let level     = p[5];
+                                let mode      = if enabled != 0 { (options >> 3) & 0x03 } else { 0 };
+                                println!("      enabled={enabled} options=0x{options:02X} supported=0x{supported:02X} level={level}");
+                                println!("      decoded: mode={mode} auto=(0x02&sup)={} manual=(0x08&sup)={}",
+                                    (supported & 0x02) != 0, (supported & 0x08) != 0);
+                                println!("      all supported bits: {}",
+                                    (0u8..8).filter(|&b| (supported >> b) & 1 != 0)
+                                        .map(|b| format!("bit{b}(0x{:02X})", 1u8 << b))
+                                        .collect::<Vec<_>>().join(", "));
+                            }
+                        }
+                        Err(e) => println!("      GetBacklightState failed: {e}"),
+                    }
+                } else {
+                    println!("    {label} NOT in feature table");
+                }
+            }
         }
     }
 }
@@ -165,13 +228,25 @@ fn feature_label(id: u16) -> &'static str {
         0x0001 => "FEATURE_SET",
         0x0003 => "FW_VERSION",
         0x0005 => "DEVICE_NAME",
+        0x0007 => "DEVICE_FRIENDLY_NAME",
+        0x0008 => "RESET_PAIRING",
         0x0020 => "RESET",
         0x1000 => "BATTERY_STATUS",
         0x1001 => "BATTERY_VOLTAGE",
         0x1004 => "UNIFIED_BATTERY",
+        0x1806 => "CONFIG_DEVICE_PROPS",
+        0x1814 => "CHANGE_HOST",
+        0x1815 => "HOSTS_INFO",
+        0x1981 => "BACKLIGHT",
+        0x1982 => "BACKLIGHT2",
+        0x1983 => "BACKLIGHT3",
+        0x1B04 => "SPECIAL_KEYS_BUTTONS",
+        0x1B10 => "SPECIAL_KEYS_BUTTONS_v3",
         0x1D4B => "WIRELESS_DEVICE_STATUS",
+        0x1DE0 => "KEEP_ALIVE",
         0x1E00 => "ENABLE_HIDDEN_FEATURES",
         0x1F20 => "CONFIGURATION_CHANGE",
+        0x1500 => "FORCE_PAIRING",
         0x2100 => "VERTICAL_SCROLLING",
         0x2110 => "SMART_SHIFT",
         0x2111 => "SMART_SHIFT_ENHANCED",
@@ -184,32 +259,25 @@ fn feature_label(id: u16) -> &'static str {
         0x2400 => "POINTER_SPEED",
         0x40A0 => "FN_INVERSION",
         0x40A2 => "NEW_FN_INVERSION",
+        0x40A3 => "K375S_FN_INVERSION",
         0x4100 => "ENCRYPTION",
         0x4220 => "LOCK_KEY_STATE",
         0x4301 => "SOLAR_DASHBOARD",
         0x4520 => "KEYBOARD_LAYOUT",
         0x4522 => "KEYBOARD_DISABLE_KEYS",
+        0x4531 => "MULTIPLATFORM",
         0x4600 => "DUALPLATFORM",
-        0x4610 => "MULTIPLATFORM",
+        0x4610 => "MULTIPLATFORM_OLD",
         0x4621 => "KEYBOARD_LAYOUT2",
-        0x6010 => "BACKLIGHT",
-        0x6020 => "BACKLIGHT2",
-        0x6030 => "BACKLIGHT3",
+        0x6010 => "BACKLIGHT-GAMING",
+        0x6020 => "BACKLIGHT2-GAMING",
+        0x6030 => "BACKLIGHT3-GAMING",
         0x6100 => "ILLUMINATION",
-        0x6110 => "FORCE_PAIRING",
+        0x6110 => "FORCE_PAIRING2",
         0x8010 => "GAMING_ATTACHMENTS",
         0x8020 => "CONFIG_CHANGE",
         0x8100 => "ONBOARD_PROFILES",
         0x8110 => "MOUSE_BUTTON_SPY",
-        0x1B04 => "SPECIAL_KEYS_BUTTONS",
-        0x1B10 => "SPECIAL_KEYS_BUTTONS_v3",
-        0x1DE0 => "KEEP_ALIVE",
-        0x0007 => "DEVICE_FRIENDLY_NAME",
-        0x0008 => "RESET_PAIRING",
-        0x1500 => "FORCE_PAIRING",
-        0x1806 => "CONFIG_DEVICE_PROPS",
-        0x1814 => "CHANGE_HOST",
-        0x1815 => "HOSTS_INFO",
         _ => "unknown",
     }
 }
