@@ -767,8 +767,8 @@ pub fn get_backlight(
     // effects field at bytes 3-4; level at byte 5.
     let level     = p.get(5).copied().unwrap_or(0);
     let mode = if enabled { (options >> 3) & 0x03 } else { 0 };
-    let auto_supported   = (supported & 0x08) != 0;
-    let manual_supported = (supported & 0x20) != 0;
+    let auto_supported   = (supported & 0x02) != 0;  // bit 1 = mode 1 (automatic)
+    let manual_supported = (supported & 0x08) != 0;  // bit 3 = mode 3 (manual)
 
     Ok(Some(BacklightInfo { mode, auto_supported, manual_supported, level }))
 }

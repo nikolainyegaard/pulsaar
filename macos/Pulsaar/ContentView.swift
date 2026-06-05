@@ -761,7 +761,7 @@ private struct DeviceSettingsPanel: View {
                                 }
                             )
                         }
-                        .padding(.vertical, 2)
+                        .listRowSeparator(.hidden)
                     }
                 }
             }
@@ -811,7 +811,7 @@ private struct DeviceSettingsPanel: View {
                                 }
                             )
                         }
-                        .padding(.vertical, 2)
+                        .listRowSeparator(.hidden)
                     }
                 }
             }

@@ -265,7 +265,7 @@ enum WheelMode: UInt8, CaseIterable {
     var label: String {
         switch self {
         case .freespin:   return "Freespin"
-        case .smartShift: return "Smart Shift"
+        case .smartShift: return "Ratchet"
         }
     }
 }
