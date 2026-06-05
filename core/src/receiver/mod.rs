@@ -64,6 +64,17 @@ pub struct ReceiverHandle {
     pub name: &'static str,
 }
 
+/// All configurable settings for one device, batched from a single feature discovery.
+pub struct AllDeviceSettings {
+    pub dpi:           Option<hidpp20::DpiInfo>,
+    pub scroll:        Option<hidpp20::ScrollInfo>,
+    pub smart_shift:   Option<hidpp20::SmartShiftInfo>,
+    pub hosts:         Option<Vec<hidpp20::HostInfo>>,
+    pub fn_settings:   Option<hidpp20::FnInfo>,
+    pub multiplatform: Option<hidpp20::MultiplatformInfo>,
+    pub backlight:     Option<hidpp20::BacklightInfo>,
+}
+
 /// An opened receiver. Provides access to paired device info.
 pub struct Receiver {
     transport: Transport,
@@ -294,6 +305,23 @@ impl Receiver {
         let features = hidpp20::discover_features(&self.transport, slot)?;
         hidpp20::set_backlight(&self.transport, slot, &features, mode, level)
     }
+
+    /// Read all configurable settings for the device in the given slot in a single operation.
+    ///
+    /// Calls discover_features once and reads every feature with the same map, avoiding
+    /// the 7x redundant discovery overhead of calling each get_* method individually.
+    /// Individual feature errors are treated as absent (None) rather than propagated.
+    pub fn get_all_settings(&self, slot: u8) -> crate::error::Result<AllDeviceSettings> {
+        let features     = hidpp20::discover_features(&self.transport, slot)?;
+        let dpi          = hidpp20::get_dpi_info(&self.transport, slot, &features).unwrap_or(None);
+        let scroll       = hidpp20::get_scroll_info(&self.transport, slot, &features).unwrap_or(None);
+        let smart_shift  = hidpp20::get_smart_shift(&self.transport, slot, &features).unwrap_or(None);
+        let hosts        = hidpp20::get_hosts(&self.transport, slot, &features).unwrap_or(None);
+        let fn_settings  = hidpp20::get_fn_settings(&self.transport, slot, &features).unwrap_or(None);
+        let multiplatform = hidpp20::get_multiplatform(&self.transport, slot, &features).unwrap_or(None);
+        let backlight    = hidpp20::get_backlight(&self.transport, slot, &features).unwrap_or(None);
+        Ok(AllDeviceSettings { dpi, scroll, smart_shift, hosts, fn_settings, multiplatform, backlight })
+    }
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -507,14 +535,19 @@ impl Receiver {
     }
 
     /// Open a receiver dedicated to monitoring device connection-state events.
-    /// Enables the WIRELESS notification flag so the receiver sends 0x41 notifications
-    /// when a paired device comes online or goes offline.
+    ///
+    /// Sets NOTIF_WIRELESS so the receiver sends 0x41 notifications when a paired
+    /// device comes online or goes offline. Explicitly clears NOTIF_SOFTWARE_PRESENT:
+    /// when that flag is set, devices with SPECIAL_KEYS_BUTTONS (0x1B04) diversions
+    /// (e.g. media keys configured by Logitech Options+) route key events through
+    /// HID++ instead of standard USB HID. Since Pulsaar does not handle those events,
+    /// leaving SOFTWARE_PRESENT set causes the diverted keys to stop working at the OS.
     pub fn open_for_events(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
         let recv = Self::open(api, handle)?;
         if let Ok(flags) = hidpp10::get_notification_flags(&recv.transport) {
-            let needed = hidpp10::NOTIF_WIRELESS | hidpp10::NOTIF_SOFTWARE_PRESENT;
-            if flags & needed != needed {
-                let _ = hidpp10::set_notification_flags(&recv.transport, flags | needed);
+            let desired = (flags | hidpp10::NOTIF_WIRELESS) & !hidpp10::NOTIF_SOFTWARE_PRESENT;
+            if flags != desired {
+                let _ = hidpp10::set_notification_flags(&recv.transport, desired);
             }
         }
         Ok(recv)
@@ -523,7 +556,9 @@ impl Receiver {
     /// Poll for one device connection-state event. Blocks for at most timeout_ms milliseconds.
     ///
     /// Returns Some((slot, online)) when a device comes online or goes offline.
-    /// Returns None on timeout or when the incoming message is not a connection-state notification.
+    /// Returns None on timeout or for any message that is not a 0x41/0x4B connection notification.
+    /// Other HID++ 2.0 unsolicited notifications (key events, battery updates, etc.) are
+    /// intentionally ignored here; they must not be treated as connection-state changes.
     ///
     /// Protocol reference (matches Solaar's _process_hidpp10_notification):
     ///   0x41 (DJ_PAIRING): params[0] & 0x40 == 0 => link established (online)
@@ -556,17 +591,7 @@ impl Receiver {
                     Ok(None)
                 }
             }
-            _ => {
-                // HID++ 2.0 unsolicited feature notification: sub_id is the feature
-                // index and the low nibble of address is the software ID (0 for
-                // device-originated events, non-zero for replies and input events).
-                // Covers battery status, charging state, WIRELESS_DEVICE_STATUS, etc.
-                if sub_id > 0 && msg.address() & 0x0F == 0x00 {
-                    Ok(Some((slot, true)))
-                } else {
-                    Ok(None)
-                }
-            }
+            _ => Ok(None),
         }
     }
 

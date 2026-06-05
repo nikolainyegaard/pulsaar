@@ -523,11 +523,30 @@ private struct DeviceSettingsPanel: View {
         .task(id: device.id) {
             // Serve from cache immediately if available -- no HID round-trip needed.
             if let cached = store.settingsCache[device.id] {
+                pLog("SETTINGS", "task '\(device.name)': cache HIT -> applying")
                 applySettings(cached)
                 isLoading = false
                 return
             }
-            // Cache miss: load from device.
+            // Cache miss. If prefetch is still running it holds the receiver open;
+            // wait for it to finish and then try the cache again before opening independently.
+            if store.isPrefetching {
+                pLog("SETTINGS", "task '\(device.name)': cache MISS but prefetch running -- waiting")
+                isLoading = true
+                for _ in 0..<24 {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    if !store.isPrefetching { break }
+                }
+                if let cached = store.settingsCache[device.id] {
+                    pLog("SETTINGS", "task '\(device.name)': cache HIT after prefetch wait -> applying")
+                    applySettings(cached)
+                    isLoading = false
+                    return
+                }
+                pLog("SETTINGS", "task '\(device.name)': still no cache after wait, loading independently")
+            }
+            // Load from device.
+            pLog("SETTINGS", "task '\(device.name)': cache MISS -> loading from device")
             isLoading = true
             store.pauseEventPolling()
             let capturedDevice = device
@@ -539,8 +558,11 @@ private struct DeviceSettingsPanel: View {
             }
             store.resumeEventPolling()
             if let s = result {
+                pLog("SETTINGS", "task '\(device.name)': loaded ok, applying + caching")
                 applySettings(s)
                 store.settingsCache[capturedDevice.id] = s
+            } else {
+                pLog("SETTINGS", "task '\(device.name)': load returned nil (no settings)")
             }
             settings  = result
             isLoading = false
@@ -561,11 +583,13 @@ private struct DeviceSettingsPanel: View {
         currentOsIdx        = s.currentOsIdx
         if let blMode = s.backlightMode { backlightMode       = blMode }
         backlightBrightness = s.backlightBrightness
+        pLog("SETTINGS", "applySettings: dpi=\(currentDpi) scrollInv=\(scrollInverted) hires=\(hiresEnabled) wheelMode=\(wheelMode.label) fnSwapped=\(fnSwapped) backlightMode=\(backlightMode.label) brightness=\(backlightBrightness) hostIdx=\(currentHostIdx) osIdx=\(currentOsIdx)")
     }
 
     // MARK: Write functions
 
     private func writeDpi(_ dpi: Int) {
+        pLog("WRITE", "UI -> writeDpi dpi=\(dpi) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -576,6 +600,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeScrollSettings(inverted: Bool, hires: Bool) {
+        pLog("WRITE", "UI -> writeScrollSettings inverted=\(inverted) hires=\(hires) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -586,6 +611,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeSmartShift(wheelMode: UInt8, torque: UInt8) {
+        pLog("WRITE", "UI -> writeSmartShift wheelMode=\(wheelMode) torque=\(torque) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -596,6 +622,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeActiveHost(hostSlot: UInt8) {
+        pLog("WRITE", "UI -> writeActiveHost hostSlot=\(hostSlot) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -606,6 +633,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeFnSwap(swapped: Bool) {
+        pLog("WRITE", "UI -> writeFnSwap swapped=\(swapped) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -616,6 +644,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeMultiplatform(platformIndex: UInt8) {
+        pLog("WRITE", "UI -> writeMultiplatform platformIndex=\(platformIndex) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()
@@ -626,6 +655,7 @@ private struct DeviceSettingsPanel: View {
     }
 
     private func writeBacklight(mode: UInt8, brightness: UInt8) {
+        pLog("WRITE", "UI -> writeBacklight mode=\(mode) brightness=\(brightness) device='\(device.name)'")
         let capturedDevice = device
         let capturedStore  = store
         capturedStore.pauseEventPolling()

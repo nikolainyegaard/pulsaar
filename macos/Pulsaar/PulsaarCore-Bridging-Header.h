@@ -341,3 +341,25 @@ PulsaarStatus pulsaar_get_backlight(const struct PulsaarReceiverContext *rctx, u
 
 // Set backlight mode (0=off, 1=auto, 3=manual) and brightness (0-100, mode=3 only).
 PulsaarStatus pulsaar_set_backlight(const struct PulsaarReceiverContext *rctx, uint8_t slot, uint8_t mode, uint8_t brightness);
+
+// ---------------------------------------------------------------------------
+// Batch settings read (one feature discovery for all seven features)
+// ---------------------------------------------------------------------------
+
+// All configurable device settings in a single struct.
+// Fields for absent features are zero-initialized, same as individual pulsaar_get_* calls.
+typedef struct {
+    CDpiSettings        dpi;
+    CScrollSettings     scroll;
+    CSmartShiftSettings ss;
+    CHostList           hosts;
+    CFnSettings         fn_s;
+    CMultiplatformSettings mp;
+    CBacklightSettings  backlight;
+} CAllDeviceSettings;
+
+// Read all configurable settings for the device in slot in one call.
+// Performs a single feature discovery; more efficient than calling the seven individual
+// pulsaar_get_* functions which each perform their own feature discovery.
+// Returns InvalidArg if rctx or out is null, or slot is 0.
+PulsaarStatus pulsaar_get_all_settings(const struct PulsaarReceiverContext *rctx, uint8_t slot, CAllDeviceSettings *out);

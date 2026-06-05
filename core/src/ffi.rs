@@ -34,6 +34,7 @@ use crate::receiver::{ReceiverHandle, ReceiverKind, Receiver, PairingSession, Pa
 // ---------------------------------------------------------------------------
 
 #[repr(C)]
+#[derive(Copy, Clone, Debug)]
 pub enum PulsaarStatus {
     Ok          = 0,
     HidError    = 1,
@@ -216,6 +217,19 @@ pub struct CBacklightSettings {
     pub auto_supported:   u8,
     pub manual_supported: u8,
     pub brightness:       u8,
+}
+
+/// All configurable device settings returned in a single batch call.
+/// Fields for absent features are zero-initialized, identical to the individual pulsaar_get_* calls.
+#[repr(C)]
+pub struct CAllDeviceSettings {
+    pub dpi:      CDpiSettings,
+    pub scroll:   CScrollSettings,
+    pub ss:       CSmartShiftSettings,
+    pub hosts:    CHostList,
+    pub fn_s:     CFnSettings,
+    pub mp:       CMultiplatformSettings,
+    pub backlight: CBacklightSettings,
 }
 
 /// Info about a device paired to a receiver.
@@ -544,6 +558,7 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
 
     match Receiver::open(&(*ctx).api, handle) {
         Ok(receiver) => {
+            eprintln!("[PULSAAR][FFI] pulsaar_open_receiver[{}] '{}' ok", index, handle.name);
             if !status_out.is_null() { *status_out = PulsaarStatus::Ok; }
             Box::into_raw(Box::new(PulsaarReceiverContext {
                 receiver,
@@ -551,7 +566,10 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
                 pairing: None,
             }))
         }
-        Err(e) => fail!(PulsaarStatus::from(e)),
+        Err(e) => {
+            eprintln!("[PULSAAR][FFI] pulsaar_open_receiver[{}] FAIL: {:?}", index, e);
+            fail!(PulsaarStatus::from(e))
+        }
     }
 }
 
@@ -946,13 +964,16 @@ pub unsafe extern "C" fn pulsaar_set_dpi(
     slot: u8,
     dpi:  u16,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_dpi slot={} dpi={}", slot, dpi);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_dpi(slot, dpi)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_dpi err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_dpi -> {:?}", status as u32);
+    status
 }
 
 /// Read scroll wheel capabilities and current mode for the device in the given slot.
@@ -997,15 +1018,18 @@ pub unsafe extern "C" fn pulsaar_set_scroll_settings(
     inverted:     u8,
     hires_enabled: u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_scroll_settings slot={} inverted={} hires={}", slot, inverted, hires_enabled);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| {
         (*rctx).receiver.set_scroll_settings(slot, inverted != 0, hires_enabled != 0)
     }));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_scroll err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_scroll -> {:?}", status as u32);
+    status
 }
 
 // ---------------------------------------------------------------------------
@@ -1051,13 +1075,16 @@ pub unsafe extern "C" fn pulsaar_set_smartshift(
     wheel_mode: u8,
     torque:     u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_smartshift slot={} wheel_mode={} torque={}", slot, wheel_mode, torque);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_smart_shift(slot, wheel_mode, torque)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_smartshift err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_smartshift -> {:?}", status as u32);
+    status
 }
 
 /// Read the host slot list for the device in the given slot.
@@ -1106,13 +1133,16 @@ pub unsafe extern "C" fn pulsaar_set_active_host(
     slot:      u8,
     host_slot: u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_active_host slot={} host_slot={}", slot, host_slot);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_active_host(slot, host_slot)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_active_host err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_active_host -> {:?}", status as u32);
+    status
 }
 
 /// Read FN key inversion state for the device in the given slot.
@@ -1151,13 +1181,16 @@ pub unsafe extern "C" fn pulsaar_set_fn_swap(
     slot:    u8,
     swapped: u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_fn_swap slot={} swapped={}", slot, swapped);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_fn_swap(slot, swapped != 0)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_fn_swap err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_fn_swap -> {:?}", status as u32);
+    status
 }
 
 /// Read multiplatform OS layout state for the device in the given slot.
@@ -1210,13 +1243,16 @@ pub unsafe extern "C" fn pulsaar_set_multiplatform(
     slot:           u8,
     platform_index: u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_multiplatform slot={} platform_index={}", slot, platform_index);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_multiplatform(slot, platform_index)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_multiplatform err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_multiplatform -> {:?}", status as u32);
+    status
 }
 
 /// Read backlight state for the device in the given slot.
@@ -1247,6 +1283,93 @@ pub unsafe extern "C" fn pulsaar_get_backlight(
     }
 }
 
+/// Read all configurable settings for the device in the given slot in one call.
+///
+/// Performs a single feature discovery and reads all supported features with the same map.
+/// More efficient than calling the seven individual pulsaar_get_* functions, each of which
+/// performs its own feature discovery. Individual feature errors are treated as absent.
+///
+/// Returns InvalidArg if rctx or out is null, or slot is 0.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_get_all_settings(
+    rctx: *const PulsaarReceiverContext,
+    slot: u8,
+    out:  *mut CAllDeviceSettings,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
+
+    let out_ref = &mut *out;
+    out_ref.dpi      = CDpiSettings { dpi_count: 0, dpi_list: [0u16; 200], current_dpi: 0, default_dpi: 0 };
+    out_ref.scroll   = CScrollSettings { has_invert: 0, has_hires: 0, inverted: 0, hires_enabled: 0 };
+    out_ref.ss       = CSmartShiftSettings { wheel_mode: 0, has_torque: 0, torque: 0 };
+    out_ref.hosts.count = 0;
+    for i in 0..8 { out_ref.hosts.hosts[i] = CHostInfo { slot: 0, name: [0u8; 64], is_active: 0 }; }
+    out_ref.fn_s     = CFnSettings { has_feature: 0, fn_swapped: 0 };
+    out_ref.mp.count   = 0;
+    out_ref.mp.current = 0;
+    for i in 0..8 { out_ref.mp.platform_names[i] = [0u8; 32]; out_ref.mp.platform_indices[i] = 0; }
+    out_ref.backlight = CBacklightSettings { has_feature: 0, mode: 0, auto_supported: 0, manual_supported: 0, brightness: 0 };
+
+    let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_all_settings(slot)));
+    match result {
+        Ok(Ok(all)) => {
+            if let Some(dpi) = all.dpi {
+                let count = dpi.dpi_list.len().min(200);
+                out_ref.dpi.dpi_count   = count as u8;
+                out_ref.dpi.current_dpi = dpi.current_dpi;
+                out_ref.dpi.default_dpi = dpi.default_dpi;
+                for (i, &val) in dpi.dpi_list.iter().take(200).enumerate() {
+                    out_ref.dpi.dpi_list[i] = val;
+                }
+            }
+            if let Some(scroll) = all.scroll {
+                out_ref.scroll.has_invert    = if scroll.has_invert    { 1 } else { 0 };
+                out_ref.scroll.has_hires     = if scroll.has_hires     { 1 } else { 0 };
+                out_ref.scroll.inverted      = if scroll.inverted      { 1 } else { 0 };
+                out_ref.scroll.hires_enabled = if scroll.hires_enabled { 1 } else { 0 };
+            }
+            if let Some(ss) = all.smart_shift {
+                out_ref.ss.wheel_mode = ss.wheel_mode;
+                out_ref.ss.has_torque = if ss.has_torque { 1 } else { 0 };
+                out_ref.ss.torque     = ss.torque;
+            }
+            if let Some(hosts) = all.hosts {
+                let count = hosts.len().min(8);
+                out_ref.hosts.count = count as u8;
+                for (i, h) in hosts.iter().take(8).enumerate() {
+                    out_ref.hosts.hosts[i].slot      = h.slot;
+                    out_ref.hosts.hosts[i].name      = str_to_buf(&h.name);
+                    out_ref.hosts.hosts[i].is_active = if h.is_active { 1 } else { 0 };
+                }
+            }
+            if let Some(fn_s) = all.fn_settings {
+                out_ref.fn_s.has_feature = 1;
+                out_ref.fn_s.fn_swapped  = if fn_s.fn_swapped { 1 } else { 0 };
+            }
+            if let Some(mp) = all.multiplatform {
+                let count = mp.platforms.len().min(8);
+                out_ref.mp.count   = count as u8;
+                let cur_pos = mp.platforms.iter().position(|p| p.index == mp.current).unwrap_or(0);
+                out_ref.mp.current = cur_pos as u8;
+                for (i, p) in mp.platforms.iter().take(8).enumerate() {
+                    out_ref.mp.platform_names[i]   = str_to_buf(&p.name);
+                    out_ref.mp.platform_indices[i] = p.index;
+                }
+            }
+            if let Some(bl) = all.backlight {
+                out_ref.backlight.has_feature      = 1;
+                out_ref.backlight.mode             = bl.mode;
+                out_ref.backlight.auto_supported   = if bl.auto_supported   { 1 } else { 0 };
+                out_ref.backlight.manual_supported = if bl.manual_supported { 1 } else { 0 };
+                out_ref.backlight.brightness       = bl.level;
+            }
+            PulsaarStatus::Ok
+        }
+        Ok(Err(e)) => PulsaarStatus::from(e),
+        Err(_)     => PulsaarStatus::Unknown,
+    }
+}
+
 /// Set backlight mode and brightness for the device in the given slot.
 ///
 /// mode:       0=disabled, 1=automatic, 3=manual.
@@ -1260,11 +1383,14 @@ pub unsafe extern "C" fn pulsaar_set_backlight(
     mode:       u8,
     brightness: u8,
 ) -> PulsaarStatus {
+    eprintln!("[PULSAAR][FFI] pulsaar_set_backlight slot={} mode={} brightness={}", slot, mode, brightness);
     if rctx.is_null() || slot == 0 { return PulsaarStatus::InvalidArg; }
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.set_backlight(slot, mode, brightness)));
-    match result {
+    let status = match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
-        Ok(Err(e)) => PulsaarStatus::from(e),
+        Ok(Err(e)) => { eprintln!("[PULSAAR][FFI]   set_backlight err: {:?}", e); PulsaarStatus::from(e) }
         Err(_)     => PulsaarStatus::Unknown,
-    }
+    };
+    eprintln!("[PULSAAR][FFI]   set_backlight -> {:?}", status as u32);
+    status
 }

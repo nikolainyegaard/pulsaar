@@ -105,6 +105,13 @@ pub fn discover_features(transport: &Transport, device: u8) -> Result<HashMap<u1
         }
     }
 
+    let mut feat_list: Vec<String> = map.iter()
+        .map(|(&id, &idx)| format!("0x{:04X}@{}", id, idx))
+        .collect();
+    feat_list.sort();
+    eprintln!("[PULSAAR][HIDPP20] dev=0x{:02X} discover_features: {} feature(s): {}",
+        device, map.len(), feat_list.join(", "));
+
     Ok(map)
 }
 
@@ -133,6 +140,11 @@ pub fn feature_call(
     function: u8,
     params: &[u8],
 ) -> Result<Message> {
+    let params_hex: String = params.iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+    eprintln!("[PULSAAR][HIDPP20] dev=0x{:02X} feat=0x{:02X} fn={} params=[{}]",
+        device, feature_index, function,
+        if params_hex.is_empty() { "(none)".to_owned() } else { params_hex });
+
     let req = if params.len() <= 3 {
         let p = [
             params.first().copied().unwrap_or(0),
@@ -143,7 +155,16 @@ pub fn feature_call(
     } else {
         Message::long(device, feature_index, fn_addr(function), params)
     };
-    transport.request(&req)
+    let reply = transport.request(&req);
+    match &reply {
+        Ok(msg) => {
+            let reply_hex: String = msg.params().iter().map(|b| format!("{:02X}", b)).collect::<Vec<_>>().join(" ");
+            eprintln!("[PULSAAR][HIDPP20]   -> ok  [{}]",
+                if reply_hex.is_empty() { "(none)".to_owned() } else { reply_hex });
+        }
+        Err(e) => eprintln!("[PULSAAR][HIDPP20]   -> err {:?}", e),
+    }
+    reply
 }
 
 // -- High-level accessors -----------------------------------------------------
@@ -374,8 +395,12 @@ pub fn set_dpi(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_ADJUSTABLE_DPI) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_dpi dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_dpi dev=0x{:02X} dpi={}", device, dpi);
     feature_call(transport, device, idx, 3, &[0x00, (dpi >> 8) as u8, (dpi & 0xFF) as u8])?;
     Ok(())
 }
@@ -423,8 +448,12 @@ pub fn set_scroll_settings(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_HIRES_WHEEL) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_scroll_settings dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_scroll_settings dev=0x{:02X} inverted={} hires={}", device, inverted, hires_enabled);
     let mode_byte = (if inverted { 0x04u8 } else { 0 }) | (if hires_enabled { 0x02 } else { 0 });
     feature_call(transport, device, idx, 2, &[mode_byte])?;
     Ok(())
@@ -481,8 +510,12 @@ pub fn set_smart_shift(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_SMART_SHIFT_ENHANCED) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_smart_shift dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_smart_shift dev=0x{:02X} wheel_mode={} torque={}", device, wheel_mode, torque);
     let current = feature_call(transport, device, idx, 1, &[])?;
     let auto_disengage = current.params().get(1).copied().unwrap_or(0);
     feature_call(transport, device, idx, 2, &[wheel_mode, auto_disengage, torque])?;
@@ -576,8 +609,12 @@ pub fn set_active_host(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_CHANGE_HOST) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_active_host dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_active_host dev=0x{:02X} host_slot={} (device disconnects immediately)", device, host_slot);
     let _ = feature_call(transport, device, idx, 1, &[host_slot]);
     Ok(())
 }
@@ -648,13 +685,18 @@ pub fn set_fn_swap(
 ) -> Result<()> {
     let (idx, feat_id) = match find_fn_feature(features) {
         Some(pair) => pair,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_fn_swap dev=0x{:02X}: no FN feature, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_fn_swap dev=0x{:02X} swapped={} feat=0x{:04X}", device, swapped, feat_id);
     let swap_byte: u8 = if swapped { 0x01 } else { 0x00 };
     if feat_id == FEAT_K375S_FN_INVERSION {
         // Read current state to obtain the host prefix byte (p[0] of fn 0).
         let state = feature_call(transport, device, idx, 0, &[])?;
         let host = state.params().first().copied().unwrap_or(0x00);
+        eprintln!("[PULSAAR][HIDPP20]   K375S: host_byte=0x{:02X} swap_byte=0x{:02X}", host, swap_byte);
         feature_call(transport, device, idx, 1, &[host, swap_byte])?;
     } else {
         feature_call(transport, device, idx, 1, &[swap_byte])?;
@@ -746,8 +788,12 @@ pub fn set_multiplatform(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_MULTIPLATFORM) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_multiplatform dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_multiplatform dev=0x{:02X} platform_index={}", device, platform_index);
     feature_call(transport, device, idx, 3, &[0xFF, platform_index])?;
     Ok(())
 }
@@ -813,8 +859,12 @@ pub fn set_backlight(
 ) -> Result<()> {
     let idx = match features.get(&FEAT_BACKLIGHT2) {
         Some(&i) => i,
-        None => return Ok(()),
+        None => {
+            eprintln!("[PULSAAR][HIDPP20] set_backlight dev=0x{:02X}: feature absent, skipping", device);
+            return Ok(());
+        }
     };
+    eprintln!("[PULSAAR][HIDPP20] set_backlight dev=0x{:02X} mode={} level={}", device, mode, level);
 
     // Read current state to preserve options base bits and timing fields.
     let current = feature_call(transport, device, idx, 0, &[])?;
