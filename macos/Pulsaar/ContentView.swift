@@ -567,6 +567,14 @@ private struct DeviceSettingsPanel: View {
             settings  = result
             isLoading = false
         }
+        .onChange(of: store.settingsCacheVersion) { _, _ in
+            // The event listener detected a device-initiated settings change (FN toggle,
+            // scroll mode button, etc.) and refreshed the cache in the background.
+            // Re-apply only if we are not in the middle of an initial load.
+            guard !isLoading, let updated = store.settingsCache[device.id] else { return }
+            pLog("SETTINGS", "'\(device.name)': cache updated by device event -> applying")
+            applySettings(updated)
+        }
     }
 
     private func applySettings(_ s: DeviceSettingsModel) {

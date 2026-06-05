@@ -183,14 +183,16 @@ PulsaarStatus pulsaar_cancel_pairing(struct PulsaarReceiverContext *rctx);
 // ---------------------------------------------------------------------------
 
 typedef enum {
-    PulsaarConnectionEventNone    = 0, // no event within timeout
-    PulsaarConnectionEventOnline  = 1, // device in slot X came online
-    PulsaarConnectionEventOffline = 2, // device in slot X went offline
+    PulsaarConnectionEventNone            = 0, // no event within timeout
+    PulsaarConnectionEventOnline          = 1, // device in slot X came online
+    PulsaarConnectionEventOffline         = 2, // device in slot X went offline
+    PulsaarConnectionEventSettingsChanged = 3, // device in slot X reported a local settings change
 } PulsaarConnectionEvent;
 
 typedef struct {
     PulsaarConnectionEvent event;
-    uint8_t slot; // 1-based device slot; 0 when event is None
+    uint8_t slot;          // 1-based device slot; 0 when event is None
+    uint8_t feature_index; // for SettingsChanged: HID++ 2.0 feature index that fired; 0 otherwise
 } CDeviceConnectionEvent;
 
 struct PulsaarEventListenerContext;
@@ -356,6 +358,7 @@ typedef struct {
     CFnSettings         fn_s;
     CMultiplatformSettings mp;
     CBacklightSettings  backlight;
+    uint8_t             reprog_controls_idx; // 0x1B04 feature index, or 0 if absent
 } CAllDeviceSettings;
 
 // Read all configurable settings for the device in slot in one call.

@@ -332,6 +332,11 @@ struct DeviceSettingsModel {
     let backlightManualSupported: Bool
     var backlightBrightness: Int
 
+    // Feature index of REPROG_CONTROLS_V4 (0x1B04), or 0 if absent.
+    // Used to filter spurious SettingsChanged events triggered by persistent
+    // button diversions (mouse clicks) vs. actual settings changes.
+    let reprogControlsIdx: UInt8
+
     var hasDpi: Bool            { !dpiList.isEmpty }
     var hasScrollSettings: Bool { hasInvert || hasHires }
     var hasSmartShift: Bool     { wheelMode != nil }
@@ -341,7 +346,7 @@ struct DeviceSettingsModel {
     var hasBacklight: Bool      { backlightMode != nil }
     var hasAnySettings: Bool    { hasDpi || hasScrollSettings || hasSmartShift || hasHosts || hasFnSwap || hasMultiplatform || hasBacklight }
 
-    init?(dpi: CDpiSettings, scroll: CScrollSettings, smartShift: CSmartShiftSettings, hosts hostList: CHostList, fn fnSettings: CFnSettings, mp: CMultiplatformSettings, backlight bl: CBacklightSettings) {
+    init?(dpi: CDpiSettings, scroll: CScrollSettings, smartShift: CSmartShiftSettings, hosts hostList: CHostList, fn fnSettings: CFnSettings, mp: CMultiplatformSettings, backlight bl: CBacklightSettings, reprogControlsIdx: UInt8 = 0) {
         // DPI
         if dpi.dpi_count > 0 {
             dpiList = withUnsafeBytes(of: dpi.dpi_list) { raw in
@@ -422,6 +427,8 @@ struct DeviceSettingsModel {
             backlightManualSupported = false
             backlightBrightness      = 0
         }
+
+        self.reprogControlsIdx = reprogControlsIdx
 
         // Nil when no settings at all.
         if !hasAnySettings { return nil }

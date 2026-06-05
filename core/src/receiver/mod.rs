@@ -66,13 +66,27 @@ pub struct ReceiverHandle {
 
 /// All configurable settings for one device, batched from a single feature discovery.
 pub struct AllDeviceSettings {
-    pub dpi:           Option<hidpp20::DpiInfo>,
-    pub scroll:        Option<hidpp20::ScrollInfo>,
-    pub smart_shift:   Option<hidpp20::SmartShiftInfo>,
-    pub hosts:         Option<Vec<hidpp20::HostInfo>>,
-    pub fn_settings:   Option<hidpp20::FnInfo>,
-    pub multiplatform: Option<hidpp20::MultiplatformInfo>,
-    pub backlight:     Option<hidpp20::BacklightInfo>,
+    pub dpi:                  Option<hidpp20::DpiInfo>,
+    pub scroll:               Option<hidpp20::ScrollInfo>,
+    pub smart_shift:          Option<hidpp20::SmartShiftInfo>,
+    pub hosts:                Option<Vec<hidpp20::HostInfo>>,
+    pub fn_settings:          Option<hidpp20::FnInfo>,
+    pub multiplatform:        Option<hidpp20::MultiplatformInfo>,
+    pub backlight:            Option<hidpp20::BacklightInfo>,
+    /// Feature index of REPROG_CONTROLS_V4 (0x1B04) for this device, or 0 if absent.
+    /// Used to filter out button-CID HID++ notifications (which look like settings
+    /// change events) in the event listener.
+    pub reprog_controls_idx:  u8,
+}
+
+/// Event returned by poll_device_event.
+pub enum DeviceEvent {
+    /// A device came online or went offline.
+    LinkChange { slot: u8, online: bool },
+    /// The device reported an unsolicited HID++ 2.0 feature notification.
+    /// feature_index is the sub_id of the message (= 0x1B04 feature index for
+    /// button-CID events, or a settings feature index for mode changes).
+    SettingsChanged { slot: u8, feature_index: u8 },
 }
 
 /// An opened receiver. Provides access to paired device info.
@@ -318,6 +332,7 @@ impl Receiver {
         // making the physical buttons inert (SmartShift toggle, etc.). Clearing here
         // restores firmware-default behavior while the receiver is open for settings.
         let _ = hidpp20::clear_reprog_controls_diversions(&self.transport, slot, &features);
+        let reprog_controls_idx = features.get(&hidpp20::FEAT_REPROG_CONTROLS).copied().unwrap_or(0);
         let dpi          = hidpp20::get_dpi_info(&self.transport, slot, &features).unwrap_or(None);
         let scroll       = hidpp20::get_scroll_info(&self.transport, slot, &features).unwrap_or(None);
         let smart_shift  = hidpp20::get_smart_shift(&self.transport, slot, &features).unwrap_or(None);
@@ -325,7 +340,7 @@ impl Receiver {
         let fn_settings  = hidpp20::get_fn_settings(&self.transport, slot, &features).unwrap_or(None);
         let multiplatform = hidpp20::get_multiplatform(&self.transport, slot, &features).unwrap_or(None);
         let backlight    = hidpp20::get_backlight(&self.transport, slot, &features).unwrap_or(None);
-        Ok(AllDeviceSettings { dpi, scroll, smart_shift, hosts, fn_settings, multiplatform, backlight })
+        Ok(AllDeviceSettings { dpi, scroll, smart_shift, hosts, fn_settings, multiplatform, backlight, reprog_controls_idx })
     }
 }
 
@@ -582,7 +597,7 @@ impl Receiver {
     /// Protocol reference (matches Solaar's _process_hidpp10_notification):
     ///   0x41 (DJ_PAIRING): params[0] & 0x40 == 0 => link established (online)
     ///   0x4B (POWER):      address == 0x01        => device powered on (online)
-    pub fn poll_device_event(&self, timeout_ms: i32) -> Result<Option<(u8, bool)>> {
+    pub fn poll_device_event(&self, timeout_ms: i32) -> Result<Option<DeviceEvent>> {
         let msg = match self.transport.read_notification(timeout_ms)? {
             Some(m) => m,
             None    => return Ok(None),
@@ -600,17 +615,29 @@ impl Receiver {
                 // For all other protocols: params[0] bit 6 inverted = link_established.
                 if msg.address() == 0x00 { return Ok(None); }
                 let online = (msg.params().first().copied().unwrap_or(0) & 0x40) == 0;
-                Ok(Some((slot, online)))
+                Ok(Some(DeviceEvent::LinkChange { slot, online }))
             }
             NOTIF_POWER => {
                 // address 0x01 = device powered on.
                 if msg.address() == 0x01 {
-                    Ok(Some((slot, true)))
+                    Ok(Some(DeviceEvent::LinkChange { slot, online: true }))
                 } else {
                     Ok(None)
                 }
             }
-            _ => Ok(None),
+            _ => {
+                // HID++ 2.0 unsolicited feature notification: sub_id = feature index,
+                // address bits [3:0] = software_id = 0 for device-initiated events.
+                // (Pulsaar uses SOFTWARE_ID = 0x0A for its own requests; replies have
+                // address & 0x0F == 0x0A and are NOT seen here since we use request()
+                // on a separate handle. A value of 0 here means the device sent this
+                // without prompting -- i.e. a state-change notification.)
+                if (msg.address() & 0x0F) == 0 {
+                    Ok(Some(DeviceEvent::SettingsChanged { slot, feature_index: sub_id }))
+                } else {
+                    Ok(None)
+                }
+            }
         }
     }
 

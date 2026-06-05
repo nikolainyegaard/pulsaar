@@ -56,6 +56,9 @@ final class ReceiverStore {
     var receivers: [ReceiverModel] = []
     var directDevices: [DirectDeviceModel] = []
     var settingsCache: [String: DeviceSettingsModel] = [:]
+    /// Incremented each time settingsCache is updated by a background settings refresh.
+    /// DeviceSettingsPanel observes this to re-apply live device-initiated changes.
+    var settingsCacheVersion: Int = 0
     var isLoading = false
     var errorMessage: String? = nil
     /// True while prefetchSettings is running on a background thread.
@@ -85,6 +88,7 @@ final class ReceiverStore {
     @ObservationIgnored private var eventTimer: Timer? = nil
     @ObservationIgnored private var pendingEventReload: DispatchWorkItem? = nil
     @ObservationIgnored private var pendingUSBConnectReload: DispatchWorkItem? = nil
+    @ObservationIgnored private var pendingSettingsRefresh: DispatchWorkItem? = nil
 
     var isPairing: Bool { pairingStage != .idle }
 
@@ -113,6 +117,7 @@ final class ReceiverStore {
         }
         pendingEventReload?.cancel()
         pendingUSBConnectReload?.cancel()
+        pendingSettingsRefresh?.cancel()
         eventTimer?.invalidate()
         for listener in eventListeners { pulsaar_close_event_listener(listener) }
         pairingTimer?.invalidate()
@@ -221,11 +226,28 @@ final class ReceiverStore {
         for (i, listener) in eventListeners.enumerated() {
             var event = CDeviceConnectionEvent()
             pulsaar_poll_device_event(listener, 0, &event)
-            if event.event != PulsaarConnectionEventNone {
+            switch event.event {
+            case PulsaarConnectionEventOnline, PulsaarConnectionEventOffline:
                 let kind = event.event == PulsaarConnectionEventOnline ? "online" : "offline"
                 pLog("EVENTS", "connection event: listener[\(i)] slot=\(event.slot) \(kind) -> scheduling reload")
                 scheduleEventReload()
                 return
+            case PulsaarConnectionEventSettingsChanged:
+                let fi = event.feature_index
+                // Filter out button-CID events from persistent 0x1B04 diversions
+                // (Options+ may have configured persistent remaps for mouse buttons;
+                // these fire on every click with the same feature index as 0x1B04).
+                if i < receivers.count,
+                   let device = receivers[i].devices.first(where: { $0.slot == event.slot }),
+                   let cached = settingsCache[device.id],
+                   cached.reprogControlsIdx != 0,
+                   fi == cached.reprogControlsIdx {
+                    break // button click, not a settings change
+                }
+                pLog("EVENTS", "settings-change event: listener[\(i)] slot=\(event.slot) feature=0x\(String(fi, radix: 16)) -> scheduling refresh")
+                scheduleSettingsRefresh(slot: event.slot, receiverIndex: i)
+            default:
+                break
             }
         }
     }
@@ -443,9 +465,60 @@ final class ReceiverStore {
         pLog("SETTINGS", "  fn: hasFeature=\(allOut.fn_s.has_feature) swapped=\(allOut.fn_s.fn_swapped)")
         pLog("SETTINGS", "  backlight: hasFeature=\(allOut.backlight.has_feature) mode=\(allOut.backlight.mode)")
 
-        let result = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight)
+        let result = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight, reprogControlsIdx: allOut.reprog_controls_idx)
         pLog("SETTINGS", "  loadSettings result: \(result != nil ? "has settings" : "nil (no configurable settings)")")
         return result
+    }
+
+    /// Debounce wrapper for settings refresh. Multiple rapid events (e.g. scrolling
+    /// or clicking that fires HID++ notifications) collapse into a single refresh
+    /// fired 0.75s after the last event.
+    private func scheduleSettingsRefresh(slot: UInt8, receiverIndex: Int) {
+        pendingSettingsRefresh?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.doSettingsRefresh(slot: slot, receiverIndex: receiverIndex)
+        }
+        pendingSettingsRefresh = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.75, execute: work)
+    }
+
+    /// Re-read settings for one device slot and update the cache.
+    /// Stops the event listeners to free the HID handle (the event listener holds
+    /// the receiver open; macOS doesn't allow a second open on the same path),
+    /// does the settings read on a background thread, then restarts listeners.
+    private func doSettingsRefresh(slot: UInt8, receiverIndex: Int) {
+        guard receiverIndex < receivers.count else { return }
+        let receiver = receivers[receiverIndex]
+        guard let device = receiver.devices.first(where: { $0.slot == slot }) else { return }
+        guard let ctx else { return }
+        let deviceId = device.id
+
+        stopEventListeners()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            var openStatus = PulsaarStatusUnknown
+            guard let rctx: OpaquePointer = pulsaar_open_receiver(ctx, receiverIndex, &openStatus) else {
+                pLog("SETTINGS", "doSettingsRefresh slot=\(slot): FAIL open receiver")
+                DispatchQueue.main.async { self.restartEventListeners() }
+                return
+            }
+            var allOut = CAllDeviceSettings()
+            pulsaar_get_all_settings(rctx, slot, &allOut)
+            pulsaar_close_receiver(rctx)
+
+            guard let model = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight, reprogControlsIdx: allOut.reprog_controls_idx) else {
+                DispatchQueue.main.async { self.restartEventListeners() }
+                return
+            }
+
+            DispatchQueue.main.async {
+                self.settingsCache[deviceId] = model
+                self.settingsCacheVersion += 1
+                pLog("SETTINGS", "doSettingsRefresh slot=\(slot): cache updated (v\(self.settingsCacheVersion))")
+                self.restartEventListeners()
+            }
+        }
     }
 
     func setDpi(for device: DeviceModel, dpi: Int) {
@@ -576,7 +649,7 @@ final class ReceiverStore {
                                 let sw = pulsaar_set_scroll_settings(rctx, device.slot, allOut.scroll.inverted, allOut.scroll.hires_enabled)
                                 pLog("SETTINGS", "    scroll write -> \(statusStr(sw))")
                             }
-                            if let model = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight) {
+                            if let model = DeviceSettingsModel(dpi: allOut.dpi, scroll: allOut.scroll, smartShift: allOut.ss, hosts: allOut.hosts, fn: allOut.fn_s, mp: allOut.mp, backlight: allOut.backlight, reprogControlsIdx: allOut.reprog_controls_idx) {
                                 batch[device.id] = model
                                 pLog("SETTINGS", "    cached: dpi=\(model.hasDpi) scroll=\(model.hasScrollSettings) fn=\(model.hasFnSwap) backlight=\(model.hasBacklight)")
                             } else {

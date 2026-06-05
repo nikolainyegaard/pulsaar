@@ -223,13 +223,17 @@ pub struct CBacklightSettings {
 /// Fields for absent features are zero-initialized, identical to the individual pulsaar_get_* calls.
 #[repr(C)]
 pub struct CAllDeviceSettings {
-    pub dpi:      CDpiSettings,
-    pub scroll:   CScrollSettings,
-    pub ss:       CSmartShiftSettings,
-    pub hosts:    CHostList,
-    pub fn_s:     CFnSettings,
-    pub mp:       CMultiplatformSettings,
-    pub backlight: CBacklightSettings,
+    pub dpi:               CDpiSettings,
+    pub scroll:            CScrollSettings,
+    pub ss:                CSmartShiftSettings,
+    pub hosts:             CHostList,
+    pub fn_s:              CFnSettings,
+    pub mp:                CMultiplatformSettings,
+    pub backlight:         CBacklightSettings,
+    /// Feature index of REPROG_CONTROLS_V4 (0x1B04), or 0 if absent.
+    /// Used by the event listener to distinguish button-CID notifications
+    /// from actual settings-change notifications.
+    pub reprog_controls_idx: u8,
 }
 
 /// Info about a device paired to a receiver.
@@ -301,6 +305,10 @@ pub enum PulsaarConnectionEvent {
     Online  = 1,
     /// A paired device in slot X went offline.
     Offline = 2,
+    /// The device in slot X sent an unsolicited HID++ 2.0 feature notification,
+    /// indicating a local settings change (FN mode, scroll mode, SmartShift, etc.).
+    /// The caller should re-read settings for this slot and refresh the UI.
+    SettingsChanged = 3,
 }
 
 /// Result of one pulsaar_poll_device_event call.
@@ -309,6 +317,11 @@ pub struct CDeviceConnectionEvent {
     pub event: PulsaarConnectionEvent,
     /// 1-based slot of the device that changed state. 0 when event is None.
     pub slot:  u8,
+    /// For SettingsChanged: the sub_id (= HID++ 2.0 feature index) that triggered
+    /// the notification. 0 for LinkChange and None events.
+    /// Compare against reprog_controls_idx from CAllDeviceSettings to distinguish
+    /// button-CID events (0x1B04) from actual settings changes.
+    pub feature_index: u8,
 }
 
 // ---------------------------------------------------------------------------
@@ -832,21 +845,28 @@ pub unsafe extern "C" fn pulsaar_poll_device_event(
     if listener.is_null() || out.is_null() { return PulsaarStatus::InvalidArg; }
     let listener = &*listener;
 
-    *out = CDeviceConnectionEvent { event: PulsaarConnectionEvent::None, slot: 0 };
+    *out = CDeviceConnectionEvent { event: PulsaarConnectionEvent::None, slot: 0, feature_index: 0 };
 
     let result = catch_unwind(AssertUnwindSafe(|| {
         listener.receiver.poll_device_event(timeout_ms as i32)
     }));
 
+    use crate::receiver::DeviceEvent;
     match result {
-        Ok(Ok(Some((slot, true))))  => {
+        Ok(Ok(Some(DeviceEvent::LinkChange { slot, online: true })))  => {
             (*out).event = PulsaarConnectionEvent::Online;
             (*out).slot  = slot;
             PulsaarStatus::Ok
         }
-        Ok(Ok(Some((slot, false)))) => {
+        Ok(Ok(Some(DeviceEvent::LinkChange { slot, online: false }))) => {
             (*out).event = PulsaarConnectionEvent::Offline;
             (*out).slot  = slot;
+            PulsaarStatus::Ok
+        }
+        Ok(Ok(Some(DeviceEvent::SettingsChanged { slot, feature_index }))) => {
+            (*out).event         = PulsaarConnectionEvent::SettingsChanged;
+            (*out).slot          = slot;
+            (*out).feature_index = feature_index;
             PulsaarStatus::Ok
         }
         Ok(Ok(None))   => PulsaarStatus::Ok,
@@ -1308,7 +1328,8 @@ pub unsafe extern "C" fn pulsaar_get_all_settings(
     out_ref.mp.count   = 0;
     out_ref.mp.current = 0;
     for i in 0..8 { out_ref.mp.platform_names[i] = [0u8; 32]; out_ref.mp.platform_indices[i] = 0; }
-    out_ref.backlight = CBacklightSettings { has_feature: 0, mode: 0, auto_supported: 0, manual_supported: 0, brightness: 0 };
+    out_ref.backlight           = CBacklightSettings { has_feature: 0, mode: 0, auto_supported: 0, manual_supported: 0, brightness: 0 };
+    out_ref.reprog_controls_idx = 0;
 
     let result = catch_unwind(AssertUnwindSafe(|| (*rctx).receiver.get_all_settings(slot)));
     match result {
@@ -1363,6 +1384,7 @@ pub unsafe extern "C" fn pulsaar_get_all_settings(
                 out_ref.backlight.manual_supported = if bl.manual_supported { 1 } else { 0 };
                 out_ref.backlight.brightness       = bl.level;
             }
+            out_ref.reprog_controls_idx = all.reprog_controls_idx;
             PulsaarStatus::Ok
         }
         Ok(Err(e)) => PulsaarStatus::from(e),
