@@ -593,11 +593,19 @@ pub struct FnInfo {
     pub default_fn_swapped: bool,
 }
 
-fn find_fn_feature(features: &HashMap<u16, u8>) -> Option<u8> {
-    features.get(&FEAT_NEW_FN_INVERSION)
-        .or_else(|| features.get(&FEAT_FN_INVERSION))
-        .or_else(|| features.get(&FEAT_K375S_FN_INVERSION))
-        .copied()
+// Returns (feature_index, feature_id) for whichever FN inversion feature the device has.
+// Priority: NEW_FN_INVERSION (0x40A2) > FN_INVERSION (0x40A0) > K375S_FN_INVERSION (0x40A3).
+fn find_fn_feature(features: &HashMap<u16, u8>) -> Option<(u8, u16)> {
+    if let Some(&idx) = features.get(&FEAT_NEW_FN_INVERSION) {
+        return Some((idx, FEAT_NEW_FN_INVERSION));
+    }
+    if let Some(&idx) = features.get(&FEAT_FN_INVERSION) {
+        return Some((idx, FEAT_FN_INVERSION));
+    }
+    if let Some(&idx) = features.get(&FEAT_K375S_FN_INVERSION) {
+        return Some((idx, FEAT_K375S_FN_INVERSION));
+    }
+    None
 }
 
 /// Read FN key inversion state using whichever FN inversion feature the device has.
@@ -610,7 +618,7 @@ pub fn get_fn_settings(
     features: &HashMap<u16, u8>,
 ) -> Result<Option<FnInfo>> {
     let idx = match find_fn_feature(features) {
-        Some(i) => i,
+        Some((i, _)) => i,
         None => return Ok(None),
     };
     let reply = feature_call(transport, device, idx, 0, &[])?;
@@ -622,18 +630,22 @@ pub fn get_fn_settings(
 
 /// Set FN key inversion state.
 ///
-/// SetFnInversionState (fn 1): params=[inverted_byte] where bit 0 = swapped.
+/// SetFnInversionState function number varies by feature variant:
+///   0x40A0 (FN_INVERSION) and 0x40A2 (NEW_FN_INVERSION): fn 1
+///   0x40A3 (K375S_FN_INVERSION): fn 3
+/// params=[inverted_byte] where bit 0 = swapped.
 pub fn set_fn_swap(
     transport: &Transport,
     device: u8,
     features: &HashMap<u16, u8>,
     swapped: bool,
 ) -> Result<()> {
-    let idx = match find_fn_feature(features) {
-        Some(i) => i,
+    let (idx, feat_id) = match find_fn_feature(features) {
+        Some(pair) => pair,
         None => return Ok(()),
     };
-    feature_call(transport, device, idx, 1, &[if swapped { 0x01 } else { 0x00 }])?;
+    let fn_num: u8 = if feat_id == FEAT_K375S_FN_INVERSION { 3 } else { 1 };
+    feature_call(transport, device, idx, fn_num, &[if swapped { 0x01 } else { 0x00 }])?;
     Ok(())
 }
 
@@ -766,9 +778,11 @@ pub fn get_backlight(
     let supported = p[2];
     // effects field at bytes 3-4; level at byte 5.
     let level     = p.get(5).copied().unwrap_or(0);
-    let mode = if enabled { (options >> 3) & 0x03 } else { 0 };
-    let auto_supported   = (supported & 0x02) != 0;  // bit 1 = mode 1 (automatic)
-    let manual_supported = (supported & 0x08) != 0;  // bit 3 = mode 3 (manual)
+    // Mode is encoded in bits 0-1 of options: 0=disabled, 1=automatic, 3=manual/always-on.
+    let mode = if enabled { options & 0x03 } else { 0 };
+    // Supported bits: bit 0 (0x01) = auto (mode 1) supported, bit 2 (0x04) = manual (mode 3) supported.
+    let auto_supported   = (supported & 0x01) != 0;
+    let manual_supported = (supported & 0x04) != 0;
 
     Ok(Some(BacklightInfo { mode, auto_supported, manual_supported, level }))
 }
@@ -796,7 +810,8 @@ pub fn set_backlight(
 
     let options_raw = cp[1];
     let new_enabled: u8 = if mode == 0 { 0 } else { 1 };
-    let new_options = (options_raw & 0x07) | (mode << 3);
+    // Mode is in bits 0-1; preserve bit 2 and above (effects/timing flags).
+    let new_options = (options_raw & !0x03u8) | (mode & 0x03);
     let new_level   = if mode == 3 { level } else { 0 };
 
     // Preserve dho/dhi/dpow (little-endian u16 at bytes 6-7, 8-9, 10-11).

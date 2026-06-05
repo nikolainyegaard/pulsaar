@@ -202,10 +202,15 @@ fn main() {
                                 let options   = p[1];
                                 let supported = p[2];
                                 let level     = p[5];
-                                let mode      = if enabled != 0 { (options >> 3) & 0x03 } else { 0 };
+                                // Decode using bits 0-1 for mode (current hypothesis).
+                                let mode_bits01 = if enabled != 0 { options & 0x03 } else { 0 };
+                                // Also show old bits-3-4 decode for comparison.
+                                let mode_bits34 = if enabled != 0 { (options >> 3) & 0x03 } else { 0 };
                                 println!("      enabled={enabled} options=0x{options:02X} supported=0x{supported:02X} level={level}");
-                                println!("      decoded: mode={mode} auto=(0x02&sup)={} manual=(0x08&sup)={}",
-                                    (supported & 0x02) != 0, (supported & 0x08) != 0);
+                                println!("      mode via bits 0-1: {mode_bits01}  mode via bits 3-4: {mode_bits34}");
+                                println!("      auto (bit0=0x01): {} auto (bit1=0x02): {} manual (bit2=0x04): {} manual (bit3=0x08): {}",
+                                    (supported & 0x01) != 0, (supported & 0x02) != 0,
+                                    (supported & 0x04) != 0, (supported & 0x08) != 0);
                                 println!("      all supported bits: {}",
                                     (0u8..8).filter(|&b| (supported >> b) & 1 != 0)
                                         .map(|b| format!("bit{b}(0x{:02X})", 1u8 << b))
@@ -216,6 +221,116 @@ fn main() {
                     }
                 } else {
                     println!("    {label} NOT in feature table");
+                }
+            }
+
+            // -----------------------------------------------------------------------
+            // Write tests: write current state back and read-back to verify.
+            // These are non-destructive: they write the same value the device reports.
+            // -----------------------------------------------------------------------
+
+            // FN swap write test: K375S_FN_INVERSION uses fn 3, not fn 1.
+            if let Some(&idx) = features.get(&hidpp20::FEAT_K375S_FN_INVERSION) {
+                println!("    --- WRITE TEST: K375S_FN_INVERSION ---");
+                match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                    Ok(reply) => {
+                        let p = reply.params();
+                        let cur = p.first().copied().unwrap_or(0) & 0x01;
+                        println!("      current fn_swapped_byte = 0x{cur:02X}");
+
+                        // Test fn 3 (correct for K375S).
+                        match hidpp20::feature_call(transport, dev.slot, idx, 3, &[cur]) {
+                            Ok(r) => {
+                                let rp = r.params();
+                                print!("      fn 3 reply: ");
+                                for b in rp { print!("{b:02X} "); }
+                                println!();
+                                // Read back.
+                                match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                                    Ok(rb) => {
+                                        let v = rb.params().first().copied().unwrap_or(0) & 0x01;
+                                        println!("      readback = 0x{v:02X} ({})",
+                                            if v == cur { "OK: matches written value" } else { "MISMATCH" });
+                                    }
+                                    Err(e) => println!("      readback failed: {e}"),
+                                }
+                            }
+                            Err(e) => println!("      fn 3 write failed: {e}"),
+                        }
+
+                        // Test fn 1 to confirm it fails or is a no-op for K375S.
+                        match hidpp20::feature_call(transport, dev.slot, idx, 1, &[cur]) {
+                            Ok(r) => {
+                                let rp = r.params();
+                                print!("      fn 1 reply (expect error or no-op): ");
+                                for b in rp { print!("{b:02X} "); }
+                                println!();
+                            }
+                            Err(e) => println!("      fn 1 (expected to fail for K375S): {e}"),
+                        }
+                    }
+                    Err(e) => println!("      read current state failed: {e}"),
+                }
+            }
+
+            // Backlight write test: write current state back and read-back to verify encoding.
+            if let Some(&idx) = features.get(&hidpp20::FEAT_BACKLIGHT2) {
+                println!("    --- WRITE TEST: BACKLIGHT2 ---");
+                match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                    Ok(reply) => {
+                        let p = reply.params();
+                        if p.len() < 12 {
+                            println!("      response too short ({} bytes)", p.len());
+                        } else {
+                            let enabled_raw = p[0];
+                            let options_raw = p[1];
+                            let level_raw   = p[5];
+                            // Preserve timing bytes (dho/dhi/dpow at bytes 6-11).
+                            let dho_lo = p[6]; let dho_hi = p[7];
+                            let dhi_lo = p[8]; let dhi_hi = p[9];
+                            let dpow_lo = p[10]; let dpow_hi = p[11];
+
+                            println!("      before write: enabled=0x{enabled_raw:02X} options=0x{options_raw:02X} level={level_raw}");
+
+                            // Write mode=1 (auto) using bits-0-1 encoding; preserve bit 2 and above.
+                            let new_opts_bits01 = (options_raw & !0x03u8) | 0x01;
+                            let params = [
+                                0x01u8, new_opts_bits01, 0xFF, level_raw,
+                                dho_lo, dho_hi, dhi_lo, dhi_hi, dpow_lo, dpow_hi,
+                            ];
+                            println!("      writing: enabled=1 options=0x{new_opts_bits01:02X} (mode=1 via bits 0-1)");
+                            match hidpp20::feature_call(transport, dev.slot, idx, 1, &params) {
+                                Ok(r) => {
+                                    let rp = r.params();
+                                    print!("      SetBacklightState reply: ");
+                                    for b in rp { print!("{b:02X} "); }
+                                    println!();
+                                    // Read back.
+                                    match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                                        Ok(rb) => {
+                                            let rbp = rb.params();
+                                            if rbp.len() >= 6 {
+                                                let rb_en   = rbp[0];
+                                                let rb_opts = rbp[1];
+                                                let rb_lvl  = rbp[5];
+                                                println!("      readback: enabled=0x{rb_en:02X} options=0x{rb_opts:02X} level={rb_lvl}");
+                                                println!("      readback mode via bits 0-1: {} bits 3-4: {}",
+                                                    rb_opts & 0x03, (rb_opts >> 3) & 0x03);
+                                                if rb_opts == new_opts_bits01 {
+                                                    println!("      options byte MATCHES written value: bits-0-1 encoding confirmed");
+                                                } else {
+                                                    println!("      options byte DIFFERS from written (0x{:02X} vs 0x{new_opts_bits01:02X}): check encoding", rb_opts);
+                                                }
+                                            }
+                                        }
+                                        Err(e) => println!("      readback failed: {e}"),
+                                    }
+                                }
+                                Err(e) => println!("      SetBacklightState failed: {e}"),
+                            }
+                        }
+                    }
+                    Err(e) => println!("      read before write failed: {e}"),
                 }
             }
         }
