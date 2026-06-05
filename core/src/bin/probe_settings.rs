@@ -229,47 +229,47 @@ fn main() {
             // These are non-destructive: they write the same value the device reports.
             // -----------------------------------------------------------------------
 
-            // FN swap write test: K375S_FN_INVERSION uses fn 3, not fn 1.
+            // FN swap write test.
+            // Solaar's K375sFnSwap prepends the current host index (from HOSTS_INFO fn 0 byte 3)
+            // before the fn_swap byte. p[0] of GetFnInversionState is the host echo; p[1] is the
+            // actual fn_swap state. Writes must be [host_byte, fn_swap_byte].
             if let Some(&idx) = features.get(&hidpp20::FEAT_K375S_FN_INVERSION) {
-                println!("    --- WRITE TEST: K375S_FN_INVERSION ---");
-                match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
-                    Ok(reply) => {
-                        let p = reply.params();
-                        let cur = p.first().copied().unwrap_or(0) & 0x01;
-                        println!("      current fn_swapped_byte = 0x{cur:02X}");
+                println!("    --- WRITE TEST: K375S_FN_INVERSION (host-prefixed) ---");
 
-                        // Test fn 3 (correct for K375S).
-                        match hidpp20::feature_call(transport, dev.slot, idx, 3, &[cur]) {
-                            Ok(r) => {
-                                let rp = r.params();
-                                print!("      fn 3 reply: ");
-                                for b in rp { print!("{b:02X} "); }
+                let baseline = match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                    Ok(r) => r,
+                    Err(e) => { println!("      baseline read failed: {e}"); continue; }
+                };
+                let bp = baseline.params();
+                print!("      baseline (fn 0): "); for b in bp { print!("{b:02X} "); } println!();
+                // p[0] = host echo byte; p[1] = fn_swap state.
+                let host_byte = bp.first().copied().unwrap_or(0x00);
+                let cur_swap  = bp.get(1).copied().unwrap_or(0) & 0x01;
+                let toggled   = cur_swap ^ 0x01;
+                println!("      host_byte=0x{host_byte:02X} fn_swap={cur_swap} -> writing [0x{host_byte:02X}, 0x{toggled:02X}]");
+
+                match hidpp20::feature_call(transport, dev.slot, idx, 1, &[host_byte, toggled]) {
+                    Ok(r) => {
+                        print!("      fn 1 reply: "); for b in r.params() { print!("{b:02X} "); } println!();
+                        match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
+                            Ok(rb) => {
+                                let rbp = rb.params();
+                                print!("      readback:   "); for b in rbp { print!("{b:02X} "); }
+                                let rb_swap = rbp.get(1).copied().unwrap_or(0) & 0x01;
                                 println!();
-                                // Read back.
-                                match hidpp20::feature_call(transport, dev.slot, idx, 0, &[]) {
-                                    Ok(rb) => {
-                                        let v = rb.params().first().copied().unwrap_or(0) & 0x01;
-                                        println!("      readback = 0x{v:02X} ({})",
-                                            if v == cur { "OK: matches written value" } else { "MISMATCH" });
-                                    }
-                                    Err(e) => println!("      readback failed: {e}"),
+                                if rb_swap == toggled {
+                                    println!("      fn_swap changed to {toggled}: WORKS");
+                                } else {
+                                    println!("      fn_swap still {rb_swap}: no change");
                                 }
+                                // Restore.
+                                let _ = hidpp20::feature_call(transport, dev.slot, idx, 1, &[host_byte, cur_swap]);
+                                println!("      restored fn_swap={cur_swap}");
                             }
-                            Err(e) => println!("      fn 3 write failed: {e}"),
-                        }
-
-                        // Test fn 1 to confirm it fails or is a no-op for K375S.
-                        match hidpp20::feature_call(transport, dev.slot, idx, 1, &[cur]) {
-                            Ok(r) => {
-                                let rp = r.params();
-                                print!("      fn 1 reply (expect error or no-op): ");
-                                for b in rp { print!("{b:02X} "); }
-                                println!();
-                            }
-                            Err(e) => println!("      fn 1 (expected to fail for K375S): {e}"),
+                            Err(e) => println!("      readback failed: {e}"),
                         }
                     }
-                    Err(e) => println!("      read current state failed: {e}"),
+                    Err(e) => println!("      fn 1 write failed: {e}"),
                 }
             }
 

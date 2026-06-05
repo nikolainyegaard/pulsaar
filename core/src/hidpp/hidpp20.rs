@@ -610,30 +610,36 @@ fn find_fn_feature(features: &HashMap<u16, u8>) -> Option<(u8, u16)> {
 
 /// Read FN key inversion state using whichever FN inversion feature the device has.
 ///
-/// GetFnInversionState (fn 0): [inverted_byte, default_byte, ...].
-/// Bit 0 of inverted_byte = currently swapped.
+/// GetFnInversionState (fn 0): [current_byte, default_byte, ...].
+/// Bit 0 of current_byte = currently swapped.
+///
+/// K375S_FN_INVERSION (0x40A3) quirk: on devices like the MX Mechanical, p[0] is a
+/// software-settable field that firmware ignores, while p[1] holds the actual active
+/// state (changed by physical Fn-Lock toggle). Swap the byte order for 0x40A3.
 pub fn get_fn_settings(
     transport: &Transport,
     device: u8,
     features: &HashMap<u16, u8>,
 ) -> Result<Option<FnInfo>> {
-    let idx = match find_fn_feature(features) {
-        Some((i, _)) => i,
+    let (idx, feat_id) = match find_fn_feature(features) {
+        Some(pair) => pair,
         None => return Ok(None),
     };
     let reply = feature_call(transport, device, idx, 0, &[])?;
     let p = reply.params();
-    let fn_swapped         = (p.first().copied().unwrap_or(0) & 0x01) != 0;
-    let default_fn_swapped = (p.get(1).copied().unwrap_or(0) & 0x01) != 0;
+    let (cur_idx, def_idx) = if feat_id == FEAT_K375S_FN_INVERSION { (1, 0) } else { (0, 1) };
+    let fn_swapped         = (p.get(cur_idx).copied().unwrap_or(0) & 0x01) != 0;
+    let default_fn_swapped = (p.get(def_idx).copied().unwrap_or(0) & 0x01) != 0;
     Ok(Some(FnInfo { fn_swapped, default_fn_swapped }))
 }
 
 /// Set FN key inversion state.
 ///
-/// SetFnInversionState function number varies by feature variant:
-///   0x40A0 (FN_INVERSION) and 0x40A2 (NEW_FN_INVERSION): fn 1
-///   0x40A3 (K375S_FN_INVERSION): fn 3
-/// params=[inverted_byte] where bit 0 = swapped.
+/// SetFnInversionState (fn 1): params=[inverted_byte] for 0x40A0/0x40A2.
+///
+/// K375S_FN_INVERSION (0x40A3) requires params=[host_byte, inverted_byte] where host_byte
+/// is p[0] of GetFnInversionState (the current host index echoed by the device). Without
+/// the host prefix the device accepts the command but silently ignores it.
 pub fn set_fn_swap(
     transport: &Transport,
     device: u8,
@@ -644,8 +650,15 @@ pub fn set_fn_swap(
         Some(pair) => pair,
         None => return Ok(()),
     };
-    let fn_num: u8 = if feat_id == FEAT_K375S_FN_INVERSION { 3 } else { 1 };
-    feature_call(transport, device, idx, fn_num, &[if swapped { 0x01 } else { 0x00 }])?;
+    let swap_byte: u8 = if swapped { 0x01 } else { 0x00 };
+    if feat_id == FEAT_K375S_FN_INVERSION {
+        // Read current state to obtain the host prefix byte (p[0] of fn 0).
+        let state = feature_call(transport, device, idx, 0, &[])?;
+        let host = state.params().first().copied().unwrap_or(0x00);
+        feature_call(transport, device, idx, 1, &[host, swap_byte])?;
+    } else {
+        feature_call(transport, device, idx, 1, &[swap_byte])?;
+    }
     Ok(())
 }
 
