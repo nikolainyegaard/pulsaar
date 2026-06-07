@@ -2,17 +2,30 @@
 <Page
     x:Class="Pulsaar.Views.DeviceDetailPage"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:controls="using:Pulsaar.Controls">
 
     <Grid>
-        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
-            <TextBlock x:Name="TitleText"
-                       Style="{StaticResource TitleTextBlockStyle}"
-                       HorizontalAlignment="Center"/>
-            <TextBlock Text="Device detail coming in Stage 4"
-                       Style="{StaticResource BodyTextBlockStyle}"
-                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                       HorizontalAlignment="Center"/>
-        </StackPanel>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <controls:DeviceHeader x:Name="DevHeader" Grid.Row="0"/>
+
+        <Border Grid.Row="1"
+                Height="1"
+                Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+
+        <controls:DeviceSettingsPanel x:Name="SettingsPanel" Grid.Row="2"/>
+
+        <Button x:Name="UnpairButton"
+                Grid.Row="3"
+                Content="Unpair"
+                HorizontalAlignment="Center"
+                Margin="0,12,0,24"
+                Click="UnpairButton_Click"/>
     </Grid>
 </Page>
