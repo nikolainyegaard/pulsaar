@@ -18,5 +18,6 @@ public partial class App : Application
         MainWindow = new MainWindow();
         Store = new ReceiverStore(MainWindow.DispatcherQueue);
         MainWindow.Activate();
+        MainWindow.OnStoreReady();
     }
 }

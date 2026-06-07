@@ -316,11 +316,13 @@ public partial class ReceiverStore : ObservableObject
         {
             if (snapshot[i] == nint.Zero) continue;
 
-            CDeviceConnectionEvent ev;
-            unsafe { NativeInterop.pulsaar_poll_device_event(snapshot[i], 200, &ev); }
+            CDeviceConnectionEvent evRaw;
+            unsafe { NativeInterop.pulsaar_poll_device_event(snapshot[i], 200, &evRaw); }
 
-            if (ev.event_type == PulsaarConnectionEvent.None) continue;
+            if (evRaw.event_type == PulsaarConnectionEvent.None) continue;
 
+            // evRaw had its address taken; copy to a fresh local so the lambda can capture it (CS1686).
+            var ev = evRaw;
             int receiverIndex = i;
             _uiQueue.TryEnqueue(() => HandleDeviceEvent(ev, receiverIndex));
         }
@@ -671,10 +673,12 @@ public partial class ReceiverStore : ObservableObject
                 var rctx = NativeInterop.pulsaar_open_receiver(_ctx, (nuint)receiverIndex, &openStatus);
                 if (rctx == nint.Zero)
                 {
+                    // openStatus had its address taken; copy before the lambda captures it (CS1686).
+                    var capturedStatus = openStatus;
                     _uiQueue.TryEnqueue(() =>
                     {
                         PairingStage = PairingStage.Failed;
-                        PairingError = $"Could not open receiver ({openStatus})";
+                        PairingError = $"Could not open receiver ({capturedStatus})";
                         ResumeEventPolling();
                     });
                     return;
