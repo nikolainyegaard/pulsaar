@@ -9,6 +9,7 @@ macos/build/
 *.dSYM
 
 # Windows
+windows/.vs/
 windows/*/bin/
 windows/*/obj/
 windows/*.user
