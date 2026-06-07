@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net9.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.17763.0</TargetPlatformMinVersion>
+    <RootNamespace>Pulsaar</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <Platforms>x86;x64;ARM64</Platforms>
+    <RuntimeIdentifiers>win-x86;win-x64;win-arm64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RustOutput Condition="'$(Configuration)' == 'Release'">release</RustOutput>
+    <RustOutput Condition="'$(Configuration)' != 'Release'">debug</RustOutput>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Version ranges: installs the latest stable version >= the floor. Update the floor if
+         VS shows a compatibility warning or if a breaking change requires a specific minimum. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="[1.5,)" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="[8.0,)" />
+  </ItemGroup>
+
+  <Target Name="BuildRustCore" BeforeTargets="Build">
+    <Exec Condition="'$(Configuration)' == 'Release'"
+          Command="cargo build --release"
+          WorkingDirectory="$(SolutionDir)..\core" />
+    <Exec Condition="'$(Configuration)' != 'Release'"
+          Command="cargo build"
+          WorkingDirectory="$(SolutionDir)..\core" />
+    <Copy SourceFiles="$(SolutionDir)..\core\target\$(RustOutput)\pulsaar_core.dll"
+          DestinationFolder="$(OutDir)" />
+  </Target>
+
+</Project>
