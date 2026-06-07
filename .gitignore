@@ -22,3 +22,6 @@ linux/build/
 ._*
 *.log
 /.idea/
+
+# Claude
+CLAUDE.md
