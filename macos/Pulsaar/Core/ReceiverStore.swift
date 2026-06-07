@@ -403,6 +403,17 @@ final class ReceiverStore {
         pLog("PAIRING", "finalizePairing: closing rctx, reloading")
         closePairingRctx()
         reload()
+        // reload() is synchronous; receivers is now populated. Update pairingDeviceName
+        // with the full DEVICE_NAME for the newly paired device if it came online.
+        if pairingNewSlot > 0 {
+            for receiver in receivers {
+                if let device = receiver.devices.first(where: { $0.slot == pairingNewSlot }) {
+                    pairingDeviceName = device.name
+                    pLog("PAIRING", "finalizePairing: updated device name to '\(device.name)'")
+                    break
+                }
+            }
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
             self?.prefetchSettings()
         }
@@ -767,6 +778,7 @@ final class ReceiverStore {
             DispatchQueue.main.async {
                 pLog("SETTINGS", "prefetchSettings done: \(batch.count) device(s) cached")
                 for (id, model) in batch { self.settingsCache[id] = model }
+                self.settingsCacheVersion += 1
                 self.isPrefetching = false
                 self.restartEventListeners()
             }
@@ -818,9 +830,16 @@ final class ReceiverStore {
                             if let battery = device.battery {
                                 deviceCache.update(serial: device.serial, battery: battery)
                             }
-                        } else if let cached = deviceCache.battery(for: device.serial) {
-                            device.battery = BatteryModel(cached: cached)
-                            pLog("STORE", "      injected cached battery: \(device.battery?.levelText ?? "?")")
+                            deviceCache.updateName(serial: device.serial, name: device.name)
+                        } else {
+                            if let cached = deviceCache.battery(for: device.serial) {
+                                device.battery = BatteryModel(cached: cached)
+                                pLog("STORE", "      injected cached battery: \(device.battery?.levelText ?? "?")")
+                            }
+                            if let cachedName = deviceCache.name(for: device.serial) {
+                                device.name = cachedName
+                                pLog("STORE", "      injected cached name: '\(cachedName)'")
+                            }
                         }
                         devices.append(device)
                     }

@@ -12,7 +12,8 @@ use crate::devices::types::{Battery, BatteryStatus, FirmwareInfo, FirmwareKind};
 pub const FEAT_ROOT: u16            = 0x0000;
 pub const FEAT_FEATURE_SET: u16     = 0x0001;
 pub const FEAT_FW_VERSION: u16      = 0x0003;
-pub const FEAT_DEVICE_NAME: u16     = 0x0005;
+pub const FEAT_DEVICE_NAME: u16          = 0x0005;
+pub const FEAT_DEVICE_FRIENDLY_NAME: u16 = 0x0007;
 pub const FEAT_BATTERY_STATUS: u16  = 0x1000;
 pub const FEAT_BATTERY_VOLTAGE: u16 = 0x1001;
 pub const FEAT_UNIFIED_BATTERY: u16 = 0x1004;
@@ -206,6 +207,46 @@ pub fn get_device_name(
     }
 
     Ok(Some(String::from_utf8_lossy(&name_bytes[..total_chars.min(name_bytes.len())]).into_owned()))
+}
+
+/// Get the device friendly name using FEAT_DEVICE_FRIENDLY_NAME (0x0007).
+///
+/// Returns the full marketing name (e.g. "MX Anywhere 3S for Business").
+/// The reply layout differs from DEVICE_NAME: fn 1 prepends a single skipped byte
+/// before the name bytes, so we read from params[1..] rather than params[0..].
+pub fn get_friendly_name(
+    transport: &Transport,
+    device: u8,
+    features: &HashMap<u16, u8>,
+) -> Result<Option<String>> {
+    let idx = match features.get(&FEAT_DEVICE_FRIENDLY_NAME) {
+        Some(&i) => i,
+        None => return Ok(None),
+    };
+
+    // fn 0: GetCount -> [name_byte_count, ...]
+    let count_reply = feature_call(transport, device, idx, 0, &[])?;
+    let total_chars = count_reply.params().first().copied().unwrap_or(0) as usize;
+    if total_chars == 0 {
+        return Ok(None);
+    }
+
+    // fn 1: GetFriendlyName(byte_index) -> [skipped_byte, name_bytes...]
+    let mut name_bytes = Vec::with_capacity(total_chars);
+    let mut offset = 0usize;
+    while name_bytes.len() < total_chars {
+        let reply = feature_call(transport, device, idx, 1, &[offset as u8])?;
+        let p = reply.params();
+        if p.len() < 2 { break; }
+        let chunk = &p[1..];
+        let take = (total_chars - name_bytes.len()).min(chunk.len());
+        if take == 0 { break; }
+        name_bytes.extend_from_slice(&chunk[..take]);
+        offset += take;
+    }
+
+    if name_bytes.is_empty() { return Ok(None); }
+    Ok(Some(String::from_utf8_lossy(&name_bytes).into_owned()))
 }
 
 /// Get battery status using FEAT_BATTERY_STATUS (0x1000).

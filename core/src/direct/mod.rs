@@ -124,6 +124,11 @@ pub fn enumerate_direct_devices(
         let name = hidpp20::get_device_name(&transport, RECEIVER_DEVICE, &features)
             .ok()
             .flatten()
+            .or_else(|| {
+                hidpp20::get_friendly_name(&transport, RECEIVER_DEVICE, &features)
+                    .ok()
+                    .flatten()
+            })
             .unwrap_or(name_from_descriptor);
 
         let battery = hidpp20::get_unified_battery(&transport, RECEIVER_DEVICE, &features)

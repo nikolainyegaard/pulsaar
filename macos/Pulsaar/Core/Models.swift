@@ -209,7 +209,7 @@ struct DeviceModel: Identifiable {
     let receiverIndex: Int
     let slot: UInt8
     let kind: DeviceKind
-    let name: String
+    var name: String
     let serial: String
     let productId: String   // wpid from receiver pairing data, formatted as 0xXXXX
     let receiverKind: ReceiverKind

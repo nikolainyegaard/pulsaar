@@ -175,8 +175,9 @@ impl Receiver {
                 (pairing.wpid, pairing.kind, serial, name)
             };
 
-            // Try HID++ 2.0 battery and name first; fall back to HID++ 1.0.
-            let (battery, firmware) = self.read_device_info(slot, &kind);
+            // Try HID++ 2.0 battery and name; fall back to HID++ 1.0 for battery and use codename for name.
+            let (hidpp2_name, battery, firmware) = self.read_device_info(slot, &kind);
+            let name = hidpp2_name.unwrap_or(name);
 
             devices.push(DeviceInfo {
                 slot,
@@ -193,10 +194,20 @@ impl Receiver {
     }
 
     /// Attempt to read battery and firmware from a device, trying HID++ 2.0 first.
-    fn read_device_info(&self, slot: u8, _kind: &DeviceKind) -> (Option<Battery>, Vec<crate::devices::types::FirmwareInfo>) {
+    fn read_device_info(&self, slot: u8, _kind: &DeviceKind) -> (Option<String>, Option<Battery>, Vec<crate::devices::types::FirmwareInfo>) {
         // Probe for HID++ 2.0 support.
         match hidpp20::discover_features(&self.transport, slot) {
             Ok(features) if !features.is_empty() => {
+                // Prefer device name (0x0005, full product name e.g. "MX Anywhere 3S for Business");
+                // fall back to friendly name (0x0007, shorter identifier e.g. "MX Anywhere3SB").
+                let name = hidpp20::get_device_name(&self.transport, slot, &features)
+                    .ok()
+                    .flatten()
+                    .or_else(|| {
+                        hidpp20::get_friendly_name(&self.transport, slot, &features)
+                            .ok()
+                            .flatten()
+                    });
                 let battery = hidpp20::get_unified_battery(&self.transport, slot, &features)
                     .ok()
                     .flatten()
@@ -212,13 +223,13 @@ impl Receiver {
                     });
                 let firmware = hidpp20::get_firmware(&self.transport, slot, &features)
                     .unwrap_or_default();
-                (battery, firmware)
+                (name, battery, firmware)
             }
             _ => {
-                // HID++ 1.0 fallback.
+                // HID++ 1.0 fallback: no name override, use codename from caller.
                 let battery = hidpp10::get_battery(&self.transport, slot).ok().flatten();
                 let firmware = hidpp10::get_firmware(&self.transport, slot).unwrap_or_default();
-                (battery, firmware)
+                (None, battery, firmware)
             }
         }
     }

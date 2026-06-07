@@ -46,26 +46,36 @@ struct ContentView: View {
                 Label("No devices found", systemImage: "antenna.radiowaves.left.and.right")
                     .foregroundStyle(.secondary)
             } else {
-                // Direct (Bluetooth) devices parented under a Bluetooth row.
-                if !store.directDevices.isEmpty {
-                    BluetoothSidebarRow()
-                        .tag(SidebarItem.bluetooth)
-                    ForEach(Array(store.directDevices.enumerated()), id: \.element.id) { index, device in
-                        DirectDeviceSidebarRow(device: device, isLast: index == store.directDevices.count - 1)
-                            .tag(SidebarItem.directDevice(device.id))
-                            .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
-                    }
-                }
+                let btName = Host.current().localizedName ?? "Bluetooth"
+                let hasBluetooth = !store.directDevices.isEmpty
 
-                // Receivers with their paired devices indented beneath.
-                ForEach(store.receivers) { receiver in
-                    ReceiverSidebarRow(receiver: receiver)
-                        .tag(SidebarItem.receiver(receiver.id))
+                // Build a sorted list of parent items: bluetooth row + receivers, sorted by display name.
+                // Each entry is either a receiver index or nil (= bluetooth).
+                let sortedParents: [Int?] = {
+                    var items: [(name: String, receiverIndex: Int?)] = store.receivers.map { ($0.name, $0.id) }
+                    if hasBluetooth { items.append((btName, nil)) }
+                    return items.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }.map { $0.receiverIndex }
+                }()
 
-                    ForEach(Array(receiver.devices.enumerated()), id: \.element.id) { index, device in
-                        DeviceSidebarRow(device: device, isLast: index == receiver.devices.count - 1)
-                            .tag(SidebarItem.device(device.id))
-                            .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
+                ForEach(sortedParents, id: \.self) { receiverIndex in
+                    if let receiverIndex {
+                        if let receiver = store.receivers.first(where: { $0.id == receiverIndex }) {
+                            ReceiverSidebarRow(receiver: receiver)
+                                .tag(SidebarItem.receiver(receiver.id))
+                            ForEach(Array(receiver.devices.enumerated()), id: \.element.id) { index, device in
+                                DeviceSidebarRow(device: device, isLast: index == receiver.devices.count - 1)
+                                    .tag(SidebarItem.device(device.id))
+                                    .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
+                            }
+                        }
+                    } else {
+                        BluetoothSidebarRow()
+                            .tag(SidebarItem.bluetooth)
+                        ForEach(Array(store.directDevices.enumerated()), id: \.element.id) { index, device in
+                            DirectDeviceSidebarRow(device: device, isLast: index == store.directDevices.count - 1)
+                                .tag(SidebarItem.directDevice(device.id))
+                                .listRowInsets(EdgeInsets(top: 3, leading: 16, bottom: 3, trailing: 8))
+                        }
                     }
                 }
             }
@@ -336,6 +346,7 @@ struct DeviceDetailView: View {
                 Label("Unpair device", systemImage: "minus.circle")
                     .frame(maxWidth: .infinity, alignment: .center)
             }
+            .disabled(store.isPrefetching)
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -346,7 +357,6 @@ struct DeviceDetailView: View {
                     .onChange(of: geo.size) { _, new in containerHeight = new.height }
             }
         }
-        .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingInfo = true } label: {
@@ -554,6 +564,7 @@ private struct DeviceSettingsPanel: View {
     // Phase 2
     @State private var wheelMode: WheelMode = .smartShift
     @State private var smartShiftTorque: Int = 50
+    @State private var smartShiftTorqueDrag: Double? = nil
     @State private var currentHostIdx: Int = 0
     @State private var fnSwapped: Bool = false
     @State private var currentOsIdx: Int = 0
@@ -582,6 +593,9 @@ private struct DeviceSettingsPanel: View {
             }
         }
         .task(id: device.id) {
+            // Clear stale state from any previously selected device before loading new one.
+            settings = nil
+            isLoading = true
             // Serve from cache immediately if available -- no HID round-trip needed.
             if let cached = store.settingsCache[device.id] {
                 pLog("SETTINGS", "task '\(device.name)': cache HIT -> applying")
@@ -623,7 +637,14 @@ private struct DeviceSettingsPanel: View {
                 applySettings(s)
                 store.settingsCache[capturedDevice.id] = s
             } else {
-                pLog("SETTINGS", "task '\(device.name)': load returned nil (no settings)")
+                pLog("SETTINGS", "task '\(device.name)': load returned nil")
+                // prefetch may have populated the cache while this load was in flight
+                if let cached = store.settingsCache[capturedDevice.id] {
+                    pLog("SETTINGS", "task '\(device.name)': found cache after failed load -> applying")
+                    applySettings(cached)
+                    isLoading = false
+                    return
+                }
             }
             settings  = result
             isLoading = false
@@ -770,17 +791,20 @@ private struct DeviceSettingsPanel: View {
                                 Text("Ratchet threshold")
                                 Slider(
                                     value: Binding(
-                                        get: { Double(smartShiftTorque) },
-                                        set: { smartShiftTorque = Int($0) }
+                                        get: { smartShiftTorqueDrag ?? Double(smartShiftTorque) },
+                                        set: { smartShiftTorqueDrag = $0 }
                                     ),
                                     in: 1...100,
                                     onEditingChanged: { editing in
                                         if !editing {
-                                            writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(smartShiftTorque))
+                                            let snapped = max(5, min(100, Int(((smartShiftTorqueDrag ?? Double(smartShiftTorque)) / 5.0).rounded()) * 5))
+                                            smartShiftTorque = snapped
+                                            smartShiftTorqueDrag = nil
+                                            writeSmartShift(wheelMode: wheelMode.rawValue, torque: UInt8(snapped))
                                         }
                                     }
                                 )
-                                Text("\(smartShiftTorque)%")
+                                Text("\(max(5, min(100, Int(((smartShiftTorqueDrag ?? Double(smartShiftTorque)) / 5.0).rounded()) * 5)))%")
                                     .monospacedDigit()
                                     .foregroundStyle(.secondary)
                                     .frame(width: 40, alignment: .trailing)
@@ -1052,7 +1076,6 @@ struct ReceiverDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(receiver.name)
         .sheet(isPresented: $showingPairingSheet, onDismiss: {
             if store.pairingStage == .paired {
                 store.resetPairing()
@@ -1154,7 +1177,6 @@ struct BluetoothDetailView: View {
             .padding()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .navigationTitle(hostName)
     }
 }
 
@@ -1237,7 +1259,6 @@ struct DirectDeviceDetailView: View {
                     .onChange(of: geo.size) { _, new in containerHeight = new.height }
             }
         }
-        .navigationTitle(device.name)
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button { showingInfo = true } label: {
