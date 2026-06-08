@@ -6,8 +6,8 @@ use hidapi::{HidApi, HidDevice};
 use crate::error::{Error, Hidpp10Error, Hidpp20Error, Result};
 use crate::hidpp::message::{Message, MAX_READ_SIZE, RECEIVER_DEVICE};
 
-// Receiver responds quickly (short USB round-trip).
-const RECEIVER_TIMEOUT: Duration = Duration::from_millis(900);
+// Receiver responds quickly (short USB round-trip). 300ms is generous for USB.
+const RECEIVER_TIMEOUT: Duration = Duration::from_millis(300);
 
 // Wireless devices can be slow to respond.
 const DEVICE_TIMEOUT: Duration = Duration::from_millis(4000);
@@ -72,9 +72,22 @@ impl Transport {
     /// Receiver register reads 0x83B5 (RECEIVER_INFO) and 0x81F1 (FIRMWARE) additionally
     /// require the first reply param to match the first request param (the sub-register).
     pub fn request(&self, req: &Message) -> Result<Message> {
+        self.request_timeout(req, None)
+    }
+
+    /// Like request() but with an explicit timeout override.
+    /// When Some, the override applies unconditionally to both receiver and device
+    /// requests (useful for short-timeout probes where the caller knows the device
+    /// responds quickly). Pass None to use the standard RECEIVER_TIMEOUT / DEVICE_TIMEOUT.
+    pub fn request_timeout(&self, req: &Message, timeout_override: Option<Duration>) -> Result<Message> {
         // Determine timeout; long register reads (sub_id 0x83) get extra time.
-        let base = if req.device() == RECEIVER_DEVICE { RECEIVER_TIMEOUT } else { DEVICE_TIMEOUT };
-        let timeout = if req.sub_id() == 0x83 { base * 2 } else { base };
+        let base = match timeout_override {
+            Some(t) => t,
+            None => if req.device() == RECEIVER_DEVICE { RECEIVER_TIMEOUT } else { DEVICE_TIMEOUT },
+        };
+        // Only apply the 2x multiplier for long register reads (0x83) sent to wireless devices,
+        // not to the receiver itself (which is USB and always responds quickly).
+        let timeout = if req.sub_id() == 0x83 && req.device() != RECEIVER_DEVICE { base * 2 } else { base };
 
         // For receiver registers 0x83B5 (RECEIVER_INFO) and 0x81F1 (FIRMWARE) we must also
         // match the first reply param against the first request param (the sub-register byte).

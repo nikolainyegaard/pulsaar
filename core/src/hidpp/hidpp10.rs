@@ -1,6 +1,8 @@
 // HID++ 1.0 protocol implementation.
 // Reference: reference/lib/logitech_receiver/hidpp10.py, hidpp10_constants.py
 
+use std::time::Duration;
+
 use crate::error::{Error, Hidpp10Error, Result};
 use crate::hidpp::message::{Message, RECEIVER_DEVICE};
 use crate::transport::Transport;
@@ -71,6 +73,14 @@ pub fn read_long(transport: &Transport, device: u8, reg: Register, sub_reg: u8) 
     transport.request(&req)
 }
 
+/// Like read_long but with an explicit timeout. Use for short-timeout probes where
+/// the caller knows the device responds quickly and wants to avoid the full default wait.
+pub fn read_long_timeout(transport: &Transport, device: u8, reg: Register, sub_reg: u8, timeout: Duration) -> Result<Message> {
+    let (sub_id, address) = read_ids(reg as u16);
+    let req = Message::short(device, sub_id, address, sub_reg, 0, 0);
+    transport.request_timeout(&req, Some(timeout))
+}
+
 /// Write a short register.
 pub fn write_short(transport: &Transport, device: u8, reg: Register, p0: u8, p1: u8, p2: u8) -> Result<Message> {
     let (sub_id, address) = write_ids(reg as u16);
@@ -86,6 +96,16 @@ pub fn write_long(transport: &Transport, device: u8, reg: Register, params: &[u8
 }
 
 // -- Receiver queries ---------------------------------------------------------
+
+/// Read the number of paired devices from register 0x02 (RECEIVER_CONNECTION).
+/// Reply params[1] = count. Same register for both Unifying and Bolt receivers.
+/// Read the number of paired devices from register 0x02 (RECEIVER_CONNECTION).
+/// Reply params[1] = count. Supported on Unifying/Nano/LightSpeed; Bolt receivers
+/// do not respond to this register (they time out), so the fallback max_devices is used.
+pub fn get_paired_device_count(transport: &Transport) -> Result<usize> {
+    let msg = read_short(transport, RECEIVER_DEVICE, Register::ReceiverConnection, 0)?;
+    Ok(msg.params().get(1).copied().unwrap_or(0) as usize)
+}
 
 /// Read receiver serial and max supported devices from RECEIVER_INFO sub-reg 0x03.
 ///
@@ -296,8 +316,24 @@ pub fn get_bolt_serial(transport: &Transport) -> Result<String> {
 ///   [3]    = WPID high byte
 ///   [4..8] = serial (4 bytes)
 pub fn get_bolt_pairing_info(transport: &Transport, slot: u8) -> Result<Option<BoltPairingInfo>> {
+    bolt_pairing_info_impl(transport, slot, None)
+}
+
+/// Fast variant: uses a 50ms probe timeout instead of the default RECEIVER_TIMEOUT (300ms).
+/// Occupied slots respond in ~8ms; empty slots on a Bolt receiver never reply at all
+/// (no HID++ error -- the receiver just stays silent). Using 50ms cuts empty-slot
+/// probing from ~300ms to ~50ms per slot.
+pub fn get_bolt_pairing_info_fast(transport: &Transport, slot: u8) -> Result<Option<BoltPairingInfo>> {
+    bolt_pairing_info_impl(transport, slot, Some(Duration::from_millis(50)))
+}
+
+fn bolt_pairing_info_impl(transport: &Transport, slot: u8, timeout: Option<Duration>) -> Result<Option<BoltPairingInfo>> {
     let sub_reg = InfoSubReg::BoltPairingInformation as u8 + slot;
-    match read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg) {
+    let result = match timeout {
+        Some(t) => read_long_timeout(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg, t),
+        None    => read_long(transport, RECEIVER_DEVICE, Register::ReceiverInfo, sub_reg),
+    };
+    match result {
         Err(Error::Hidpp10(Hidpp10Error::UnknownDevice | Hidpp10Error::UnsupportedParam)) => Ok(None),
         Err(e) => Err(e),
         Ok(msg) => {

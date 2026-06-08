@@ -2,6 +2,7 @@
 // Reference: reference/lib/logitech_receiver/hidpp20.py, hidpp20_constants.py
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use crate::error::{Error, Hidpp10Error, Result};
 use crate::hidpp::message::{Message, SOFTWARE_ID};
@@ -73,11 +74,37 @@ pub fn get_feature_index(transport: &Transport, device: u8, feature_id: u16) -> 
 /// Returns a map of feature_id -> feature_index. Returns an empty map if the
 /// device does not support HID++ 2.0 (no FEATURE_SET).
 pub fn discover_features(transport: &Transport, device: u8) -> Result<HashMap<u16, u8>> {
+    discover_features_impl(transport, device, None)
+}
+
+/// Like discover_features but uses a short timeout for the initial HID++ 2.0
+/// probe. Returns an empty map immediately if the device does not respond within
+/// that timeout (offline wireless device) instead of waiting for DEVICE_TIMEOUT.
+pub fn discover_features_fast(transport: &Transport, device: u8) -> Result<HashMap<u16, u8>> {
+    discover_features_impl(transport, device, Some(Duration::from_millis(500)))
+}
+
+fn discover_features_impl(transport: &Transport, device: u8, probe_timeout: Option<Duration>) -> Result<HashMap<u16, u8>> {
     let mut map = HashMap::new();
 
-    let fs_idx = match get_feature_index(transport, device, FEAT_FEATURE_SET)? {
-        Some(i) => i,
-        None => return Ok(map), // HID++ 1.0 device
+    // Probe ROOT (index 0) for FEATURE_SET using probe_timeout for the first request.
+    // Offline wireless devices time out on this first probe; using a short timeout here
+    // lets enumerate_devices skip them in ~500ms instead of waiting 4s each.
+    let probe_req = Message::short(
+        device,
+        0x00,
+        fn_addr(0),
+        (FEAT_FEATURE_SET >> 8) as u8,
+        (FEAT_FEATURE_SET & 0xFF) as u8,
+        0,
+    );
+    let fs_idx = match transport.request_timeout(&probe_req, probe_timeout) {
+        Ok(reply) => {
+            let idx = reply.params().first().copied().unwrap_or(0);
+            if idx == 0 { return Ok(map); } // HID++ 1.0 device
+            idx
+        }
+        Err(_) => return Ok(map), // offline or HID++ 1.0
     };
 
     map.insert(FEAT_ROOT, 0);

@@ -345,9 +345,13 @@ pub struct PulsaarContext {
 /// Owns one opened receiver and the last-enumerated device list.
 /// Lives between pulsaar_open_receiver / pulsaar_close_receiver.
 pub struct PulsaarReceiverContext {
-    receiver: Receiver,
-    devices:  Vec<DeviceInfo>,
-    pairing:  Option<PairingSession>,
+    receiver:          Receiver,
+    devices:           Vec<DeviceInfo>,
+    pairing:           Option<PairingSession>,
+    // Streaming enumeration state (reset by pulsaar_start_enumerate)
+    enum_slot:         u8,    // next slot to probe (1-based)
+    enum_paired_count: usize, // paired device count from receiver register
+    enum_found:        usize, // devices found so far
 }
 
 /// Owns a receiver opened exclusively for monitoring device connection-state events.
@@ -476,6 +480,15 @@ fn device_info_to_c(d: &DeviceInfo) -> CDeviceInfo {
 /// The caller must eventually call pulsaar_destroy.
 #[no_mangle]
 pub extern "C" fn pulsaar_init() -> *mut PulsaarContext {
+    // In debug builds on Windows, open a console window so that Rust eprintln! logs
+    // (which go to stderr) are visible alongside the VS debug output.
+    #[cfg(all(debug_assertions, target_os = "windows"))]
+    unsafe {
+        // AllocConsole creates a new console window for this process.
+        // It is a no-op if a console already exists, so it is safe to call unconditionally.
+        windows_sys::Win32::System::Console::AllocConsole();
+    }
+
     let result = catch_unwind(|| {
         crate::init().map(|api| {
             let receivers                    = enumerate_receivers(&api);
@@ -500,12 +513,20 @@ pub extern "C" fn pulsaar_init() -> *mut PulsaarContext {
 pub unsafe extern "C" fn pulsaar_refresh_receivers(ctx: *mut PulsaarContext) -> PulsaarStatus {
     if ctx.is_null() { return PulsaarStatus::InvalidArg; }
     let ctx = &mut *ctx;
+    let t = std::time::Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| {
+        let t0 = std::time::Instant::now();
         ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
-        ctx.receivers      = enumerate_receivers(&ctx.api);
+        eprintln!("[PULSAAR][TIMING] refresh_devices: {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
+        let t1 = std::time::Instant::now();
+        ctx.receivers = enumerate_receivers(&ctx.api);
+        eprintln!("[PULSAAR][TIMING] enumerate_receivers: {:.0}ms -> {} receiver(s)", t1.elapsed().as_secs_f64() * 1000.0, ctx.receivers.len());
+        let t2 = std::time::Instant::now();
         ctx.direct_devices = enumerate_direct_devices(&ctx.api, &mut ctx.unprobeable_bt_paths);
+        eprintln!("[PULSAAR][TIMING] enumerate_direct_devices: {:.0}ms -> {} device(s)", t2.elapsed().as_secs_f64() * 1000.0, ctx.direct_devices.len());
         Ok::<_, crate::error::Error>(())
     }));
+    eprintln!("[PULSAAR][TIMING] pulsaar_refresh_receivers total: {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
     match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
         Ok(Err(e)) => PulsaarStatus::from(e),
@@ -571,18 +592,22 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
         None    => fail!(PulsaarStatus::InvalidArg),
     };
 
+    let t = std::time::Instant::now();
     match Receiver::open(&(*ctx).api, handle) {
         Ok(receiver) => {
-            eprintln!("[PULSAAR][FFI] pulsaar_open_receiver[{}] '{}' ok", index, handle.name);
+            eprintln!("[PULSAAR][TIMING] pulsaar_open_receiver[{}] '{}' ok ({:.0}ms)", index, handle.name, t.elapsed().as_secs_f64() * 1000.0);
             if !status_out.is_null() { *status_out = PulsaarStatus::Ok; }
             Box::into_raw(Box::new(PulsaarReceiverContext {
                 receiver,
-                devices: Vec::new(),
-                pairing: None,
+                devices:           Vec::new(),
+                pairing:           None,
+                enum_slot:         1,
+                enum_paired_count: usize::MAX,
+                enum_found:        0,
             }))
         }
         Err(e) => {
-            eprintln!("[PULSAAR][FFI] pulsaar_open_receiver[{}] FAIL: {:?}", index, e);
+            eprintln!("[PULSAAR][TIMING] pulsaar_open_receiver[{}] FAIL: {:?} ({:.0}ms)", index, e, t.elapsed().as_secs_f64() * 1000.0);
             fail!(PulsaarStatus::from(e))
         }
     }
@@ -619,11 +644,79 @@ pub unsafe extern "C" fn pulsaar_enumerate_devices(
 ) -> PulsaarStatus {
     if rctx.is_null() { return PulsaarStatus::InvalidArg; }
     let rctx = &mut *rctx;
+    let t = std::time::Instant::now();
     let result = catch_unwind(AssertUnwindSafe(|| rctx.receiver.enumerate_devices()));
     match result {
-        Ok(Ok(devices)) => { rctx.devices = devices; PulsaarStatus::Ok }
-        Ok(Err(e))      => PulsaarStatus::from(e),
-        Err(_)          => PulsaarStatus::Unknown,
+        Ok(Ok(devices)) => {
+            eprintln!("[PULSAAR][TIMING] pulsaar_enumerate_devices ok: {} device(s) ({:.0}ms)", devices.len(), t.elapsed().as_secs_f64() * 1000.0);
+            rctx.devices = devices;
+            PulsaarStatus::Ok
+        }
+        Ok(Err(e)) => {
+            eprintln!("[PULSAAR][TIMING] pulsaar_enumerate_devices FAIL: {:?} ({:.0}ms)", e, t.elapsed().as_secs_f64() * 1000.0);
+            PulsaarStatus::from(e)
+        }
+        Err(_) => {
+            eprintln!("[PULSAAR][TIMING] pulsaar_enumerate_devices PANIC ({:.0}ms)", t.elapsed().as_secs_f64() * 1000.0);
+            PulsaarStatus::Unknown
+        }
+    }
+}
+
+/// Prepare streaming enumeration for the given receiver context.
+///
+/// Queries the receiver for its paired-device count, resets the slot cursor,
+/// and clears the device list. Call this once before looping pulsaar_enumerate_next_device.
+/// Returns InvalidArg if rctx is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_start_enumerate(
+    rctx: *mut PulsaarReceiverContext,
+) -> PulsaarStatus {
+    if rctx.is_null() { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    rctx.devices.clear();
+    let paired_count = match catch_unwind(AssertUnwindSafe(|| rctx.receiver.get_paired_device_count())) {
+        Ok(n)  => n,
+        Err(_) => rctx.receiver.max_devices as usize,
+    };
+    eprintln!("[PULSAAR][TIMING] pulsaar_start_enumerate: paired_count={}", paired_count);
+    rctx.enum_slot         = 1;
+    rctx.enum_paired_count = paired_count;
+    rctx.enum_found        = 0;
+    PulsaarStatus::Ok
+}
+
+/// Enumerate the next paired device. Skips empty slots automatically.
+///
+/// On success (Ok), out is populated with the device info and the internal cursor advances.
+/// Returns EmptySlot when all devices have been found or all slots are exhausted.
+/// Call in a loop after pulsaar_start_enumerate until the return value is not Ok.
+/// Returns InvalidArg if rctx or out is null.
+#[no_mangle]
+pub unsafe extern "C" fn pulsaar_enumerate_next_device(
+    rctx: *mut PulsaarReceiverContext,
+    out:  *mut CDeviceInfo,
+) -> PulsaarStatus {
+    if rctx.is_null() || out.is_null() { return PulsaarStatus::InvalidArg; }
+    let rctx = &mut *rctx;
+    loop {
+        if rctx.enum_found >= rctx.enum_paired_count { return PulsaarStatus::EmptySlot; }
+        if rctx.enum_slot > rctx.receiver.max_devices { return PulsaarStatus::EmptySlot; }
+        let slot = rctx.enum_slot;
+        rctx.enum_slot += 1;
+        let t = std::time::Instant::now();
+        let info = match catch_unwind(AssertUnwindSafe(|| rctx.receiver.enumerate_slot(slot))) {
+            Ok(Some(i)) => i,
+            _ => {
+                eprintln!("[PULSAAR][TIMING] enumerate_next slot {slot}: empty ({:.0}ms)", t.elapsed().as_secs_f64() * 1000.0);
+                continue;
+            }
+        };
+        eprintln!("[PULSAAR][TIMING] enumerate_next slot {slot}: '{}' ({:.0}ms)", info.name, t.elapsed().as_secs_f64() * 1000.0);
+        rctx.enum_found += 1;
+        *out = device_info_to_c(&info);
+        rctx.devices.push(info);
+        return PulsaarStatus::Ok;
     }
 }
 

@@ -189,62 +189,91 @@ impl Receiver {
         })
     }
 
+    /// Query the receiver for the number of currently paired devices.
+    /// Falls back to max_devices if the register read fails.
+    pub(crate) fn get_paired_device_count(&self) -> usize {
+        hidpp10::get_paired_device_count(&self.transport)
+            .unwrap_or(self.max_devices as usize)
+    }
+
+    /// Probe one slot and return its DeviceInfo, or None if the slot is empty or errored.
+    /// Contains all the per-slot pairing + HID++ 2.0 discovery logic.
+    pub(crate) fn enumerate_slot(&self, slot: u8) -> Option<DeviceInfo> {
+        let t_slot = std::time::Instant::now();
+
+        let (wpid, kind, serial, name) = if self.kind == ReceiverKind::Bolt {
+            let bolt = match hidpp10::get_bolt_pairing_info_fast(&self.transport, slot) {
+                Ok(Some(p)) => p,
+                Ok(None) | Err(_) => {
+                    eprintln!("[PULSAAR][TIMING] slot {slot}: pairing=empty/err ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+                    return None;
+                }
+            };
+            let name = hidpp10::get_bolt_device_codename(&self.transport, slot)
+                .unwrap_or(None)
+                .unwrap_or_else(|| format!("Device {}", slot));
+            eprintln!("[PULSAAR][TIMING] slot {slot}: pairing+name ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+            (bolt.wpid, bolt.kind, bytes_to_hex(&bolt.serial), name)
+        } else {
+            let pairing = match hidpp10::get_pairing_info(&self.transport, slot) {
+                Ok(Some(p)) => p,
+                Ok(None) | Err(_) => {
+                    eprintln!("[PULSAAR][TIMING] slot {slot}: pairing=empty/err ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+                    return None;
+                }
+            };
+            let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)
+                .unwrap_or(None)
+                .map(|s| bytes_to_hex(&s))
+                .unwrap_or_default();
+            let name = hidpp10::get_device_codename(&self.transport, slot)
+                .unwrap_or(None)
+                .unwrap_or_else(|| format!("Device {}", slot));
+            eprintln!("[PULSAAR][TIMING] slot {slot}: pairing+name ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+            (pairing.wpid, pairing.kind, serial, name)
+        };
+
+        let t_info = std::time::Instant::now();
+        let (hidpp2_name, battery, firmware) = self.read_device_info(slot, &kind);
+        eprintln!("[PULSAAR][TIMING] slot {slot}: read_device_info ({:.0}ms)", t_info.elapsed().as_secs_f64() * 1000.0);
+        let name = hidpp2_name.unwrap_or(name);
+
+        Some(DeviceInfo { slot, name, kind, serial, wpid, battery, firmware })
+    }
+
     /// Enumerate all devices paired to this receiver.
     ///
     /// For each occupied slot, reads pairing info (HID++ 1.0) to determine WPID
     /// and kind, then tries to read battery and name.
     pub fn enumerate_devices(&self) -> Result<Vec<DeviceInfo>> {
         let mut devices = Vec::new();
+        let t_total = std::time::Instant::now();
 
+        let paired_count = self.get_paired_device_count();
+        eprintln!("[PULSAAR][TIMING] paired_count from receiver: {}", paired_count);
+
+        let mut found = 0usize;
         for slot in 1..=self.max_devices {
-            // Bolt uses different pairing sub-registers and embeds serial in the pairing response.
-            // Per-slot errors skip the slot rather than aborting the whole enumeration.
-            let (wpid, kind, serial, name) = if self.kind == ReceiverKind::Bolt {
-                let bolt = match hidpp10::get_bolt_pairing_info(&self.transport, slot) {
-                    Ok(Some(p)) => p,
-                    Ok(None) | Err(_) => continue,
-                };
-                let name = hidpp10::get_bolt_device_codename(&self.transport, slot)
-                    .unwrap_or(None)
-                    .unwrap_or_else(|| format!("Device {}", slot));
-                (bolt.wpid, bolt.kind, bytes_to_hex(&bolt.serial), name)
-            } else {
-                let pairing = match hidpp10::get_pairing_info(&self.transport, slot) {
-                    Ok(Some(p)) => p,
-                    Ok(None) | Err(_) => continue,
-                };
-                let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)
-                    .unwrap_or(None)
-                    .map(|s| bytes_to_hex(&s))
-                    .unwrap_or_default();
-                let name = hidpp10::get_device_codename(&self.transport, slot)
-                    .unwrap_or(None)
-                    .unwrap_or_else(|| format!("Device {}", slot));
-                (pairing.wpid, pairing.kind, serial, name)
-            };
-
-            // Try HID++ 2.0 battery and name; fall back to HID++ 1.0 for battery and use codename for name.
-            let (hidpp2_name, battery, firmware) = self.read_device_info(slot, &kind);
-            let name = hidpp2_name.unwrap_or(name);
-
-            devices.push(DeviceInfo {
-                slot,
-                name,
-                kind,
-                serial,
-                wpid,
-                battery,
-                firmware,
-            });
+            if found >= paired_count { break; }
+            if let Some(info) = self.enumerate_slot(slot) {
+                devices.push(info);
+                found += 1;
+            }
         }
 
+        eprintln!("[PULSAAR][TIMING] enumerate_devices total: {:.0}ms, {} device(s)", t_total.elapsed().as_secs_f64() * 1000.0, devices.len());
         Ok(devices)
     }
 
     /// Attempt to read battery and firmware from a device, trying HID++ 2.0 first.
     fn read_device_info(&self, slot: u8, _kind: &DeviceKind) -> (Option<String>, Option<Battery>, Vec<crate::devices::types::FirmwareInfo>) {
         // Probe for HID++ 2.0 support.
-        match hidpp20::discover_features(&self.transport, slot) {
+        let t_feat = std::time::Instant::now();
+        let feat_result = hidpp20::discover_features_fast(&self.transport, slot);
+        eprintln!("[PULSAAR][TIMING] slot {slot}: discover_features_fast={} ({:.0}ms)",
+            if feat_result.is_ok() { "ok" } else { "err" },
+            t_feat.elapsed().as_secs_f64() * 1000.0);
+        match feat_result {
             Ok(features) if !features.is_empty() => {
                 // Prefer device name (0x0005, full product name e.g. "MX Anywhere 3S for Business");
                 // fall back to friendly name (0x0007, shorter identifier e.g. "MX Anywhere3SB").
@@ -274,10 +303,11 @@ impl Receiver {
                 (name, battery, firmware)
             }
             _ => {
-                // HID++ 1.0 fallback: no name override, use codename from caller.
-                let battery = hidpp10::get_battery(&self.transport, slot).ok().flatten();
-                let firmware = hidpp10::get_firmware(&self.transport, slot).unwrap_or_default();
-                (None, battery, firmware)
+                // discover_features failed: device is offline (wireless) or HID++ 1.0 only.
+                // Skip HID++ 1.0 battery/firmware fallback -- those requests go to the device
+                // slot and each times out at DEVICE_TIMEOUT for offline Bolt/Unifying devices.
+                // Battery and firmware for HID++ 1.0 devices come from prefetch/cache instead.
+                (None, None, vec![])
             }
         }
     }

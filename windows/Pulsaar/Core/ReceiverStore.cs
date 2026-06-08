@@ -48,6 +48,7 @@ public partial class ReceiverStore : ObservableObject
     // Non-observable HID state
     private nint _ctx;
     private nint _pairingRctx;
+    private bool _reloadInProgress;
     private readonly List<nint> _eventListeners = [];
     private readonly Dictionary<string, DeviceSettingsModel> _settingsCache = [];
     private readonly DeviceCache _deviceCache = new();
@@ -150,6 +151,12 @@ public partial class ReceiverStore : ObservableObject
 
     public async Task Reload(bool showIndicator)
     {
+        if (_reloadInProgress)
+        {
+            Debug.WriteLine("[PULSAAR][STORE] Reload skipped (already in progress)");
+            return;
+        }
+        _reloadInProgress = true;
         Debug.WriteLine("[PULSAAR][STORE] Reload");
         if (showIndicator) IsLoading = true;
 
@@ -157,13 +164,22 @@ public partial class ReceiverStore : ObservableObject
 
         var newReceivers     = new List<ReceiverModel>();
         var newDirectDevices = new List<DirectDeviceModel>();
+        var rctxList         = new List<nint>();
+        var kindList         = new List<ReceiverKind>();
+        var riList           = new List<int>();
         string? error        = null;
 
+        var swReload = System.Diagnostics.Stopwatch.StartNew();
+
+        // Phase 1: Open all receivers (fast, ~30ms per receiver).
+        // Builds ReceiverModel with an empty device list so the sidebar shows immediately.
         await Task.Run(() =>
         {
             unsafe
             {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 var status = NativeInterop.pulsaar_refresh_receivers(_ctx);
+                Debug.WriteLine($"[PULSAAR][TIMING] pulsaar_refresh_receivers: {sw.ElapsedMilliseconds}ms -> {status}");
                 if (status != PulsaarStatus.Ok)
                 {
                     error = $"Receiver refresh failed: {status}";
@@ -171,11 +187,14 @@ public partial class ReceiverStore : ObservableObject
                 }
 
                 nuint receiverCount = NativeInterop.pulsaar_get_receiver_count(_ctx);
+                Debug.WriteLine($"[PULSAAR][TIMING] receiver count: {receiverCount}");
+
                 for (nuint ri = 0; ri < receiverCount; ri++)
                 {
-                    var rctx = default(nint);
                     PulsaarStatus openStatus;
-                    rctx = NativeInterop.pulsaar_open_receiver(_ctx, ri, &openStatus);
+                    sw.Restart();
+                    var rctx = NativeInterop.pulsaar_open_receiver(_ctx, ri, &openStatus);
+                    Debug.WriteLine($"[PULSAAR][TIMING] open_receiver[{ri}]: {sw.ElapsedMilliseconds}ms -> {openStatus}");
                     if (rctx == nint.Zero)
                     {
                         Debug.WriteLine($"[PULSAAR][STORE] receiver {ri} open failed: {openStatus}");
@@ -185,67 +204,95 @@ public partial class ReceiverStore : ObservableObject
                     COpenedReceiverInfo openedInfo;
                     NativeInterop.pulsaar_get_opened_receiver_info(rctx, &openedInfo);
 
-                    NativeInterop.pulsaar_enumerate_devices(rctx);
-                    nuint deviceCount = NativeInterop.pulsaar_get_device_count(rctx);
-
-                    var devices = new List<DeviceModel>((int)deviceCount);
-                    for (nuint di = 0; di < deviceCount; di++)
-                    {
-                        CDeviceInfo info;
-                        if (NativeInterop.pulsaar_get_device_info(rctx, di, &info) != PulsaarStatus.Ok)
-                            continue;
-
-                        var device = DeviceModel.FromC(&info, (int)ri, (ReceiverKind)openedInfo.kind);
-
-                        // Inject cached name for offline devices
-                        if (!device.IsOnline)
-                        {
-                            var cachedName = _deviceCache.Name(device.Serial);
-                            if (cachedName != null) device.Name = cachedName;
-                        }
-                        else
-                        {
-                            _deviceCache.UpdateName(device.Serial, device.Name);
-                        }
-
-                        // Inject cached battery for offline devices
-                        if (!device.IsOnline)
-                        {
-                            device.Battery = _deviceCache.Battery(device.Serial);
-                        }
-                        else if (device.Battery != null)
-                        {
-                            _deviceCache.UpdateBattery(device.Serial, device.Battery);
-                        }
-
-                        devices.Add(device);
-                    }
-
-                    NativeInterop.pulsaar_close_receiver(rctx);
-
-                    var receiver = ReceiverModel.FromOpened((int)ri, &openedInfo, devices);
+                    var receiver = ReceiverModel.FromOpened((int)ri, &openedInfo, []);
                     newReceivers.Add(receiver);
-
-                    Debug.WriteLine($"[PULSAAR][STORE] receiver {ri}: {receiver.Name} ({deviceCount} devices)");
+                    rctxList.Add(rctx);
+                    kindList.Add((ReceiverKind)openedInfo.kind);
+                    riList.Add((int)ri);
+                    Debug.WriteLine($"[PULSAAR][STORE] opened receiver {ri}: {receiver.Name}");
                 }
+            }
+        });
 
-                // Direct (Bluetooth) devices
+        // Show receivers immediately so the sidebar is not blank during device enumeration.
+        if (error == null)
+            Receivers = newReceivers;
+
+        // Phase 2: Enumerate devices per receiver, one at a time.
+        // After each device is found the sidebar updates so devices trickle in as discovered.
+        for (int i = 0; i < rctxList.Count; i++)
+        {
+            var rctx          = rctxList[i];
+            var receiverModel = newReceivers[i];
+            var myKind        = kindList[i];
+            var myRi          = riList[i];
+
+            await Task.Run(() => { unsafe { NativeInterop.pulsaar_start_enumerate(rctx); } });
+
+            while (true)
+            {
+                DeviceModel?  device    = null;
+                PulsaarStatus devStatus = PulsaarStatus.Unknown;
+
+                await Task.Run(() =>
+                {
+                    unsafe
+                    {
+                        CDeviceInfo local = default;
+                        devStatus = NativeInterop.pulsaar_enumerate_next_device(rctx, &local);
+                        if (devStatus == PulsaarStatus.Ok)
+                            device = DeviceModel.FromC(&local, myRi, myKind);
+                    }
+                });
+
+                if (devStatus != PulsaarStatus.Ok || device == null) break;
+
+                if (!device.IsOnline)
+                {
+                    var cachedName = _deviceCache.Name(device.Serial);
+                    if (cachedName != null) device.Name = cachedName;
+                }
+                else
+                    _deviceCache.UpdateName(device.Serial, device.Name);
+
+                if (!device.IsOnline)
+                    device.Battery = _deviceCache.Battery(device.Serial);
+                else if (device.Battery != null)
+                    _deviceCache.UpdateBattery(device.Serial, device.Battery);
+
+                receiverModel.Devices.Add(device);
+                // Re-assign to trigger PropertyChanged -> BuildSidebar with the new device.
+                Receivers = new List<ReceiverModel>(newReceivers);
+            }
+
+            Debug.WriteLine($"[PULSAAR][STORE] receiver {myRi}: {receiverModel.Name} ({receiverModel.Devices.Count} device(s))");
+            NativeInterop.pulsaar_close_receiver(rctx);
+        }
+
+        // Direct (Bluetooth) devices
+        await Task.Run(() =>
+        {
+            unsafe
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 NativeInterop.pulsaar_refresh_direct_devices(_ctx);
                 nuint directCount = NativeInterop.pulsaar_get_direct_device_count(_ctx);
+                Debug.WriteLine($"[PULSAAR][TIMING] refresh_direct_devices: {sw.ElapsedMilliseconds}ms -> {directCount} device(s)");
                 for (nuint di = 0; di < directCount; di++)
                 {
                     CDirectDeviceInfo info;
-                    if (NativeInterop.pulsaar_get_direct_device_info(_ctx, di, &info) != PulsaarStatus.Ok)
-                        continue;
+                    if (NativeInterop.pulsaar_get_direct_device_info(_ctx, di, &info) != PulsaarStatus.Ok) continue;
                     newDirectDevices.Add(DirectDeviceModel.FromC(&info));
                 }
             }
         });
 
-        Receivers     = newReceivers;
-        DirectDevices = newDirectDevices;
-        ErrorMessage  = error;
-        IsLoading     = false;
+        Debug.WriteLine($"[PULSAAR][TIMING] Reload total: {swReload.ElapsedMilliseconds}ms");
+
+        DirectDevices     = newDirectDevices;
+        ErrorMessage      = error;
+        IsLoading         = false;
+        _reloadInProgress = false;
 
         RestartEventListeners();
     }
@@ -381,7 +428,7 @@ public partial class ReceiverStore : ObservableObject
         // stop event listeners here -- the Rust core can hold multiple handles simultaneously.
         var receiver = Receivers.ElementAtOrDefault(receiverIndex);
         var device   = receiver?.Devices.FirstOrDefault(d => d.Slot == slot);
-        if (device == null) return;
+        if (device == null || !device.IsOnline) return;
 
         Debug.WriteLine($"[PULSAAR][SETTINGS] refresh slot {slot} receiver {receiverIndex}");
 
@@ -442,8 +489,10 @@ public partial class ReceiverStore : ObservableObject
 
                     try
                     {
-                        foreach (var device in snapshot[ri].Devices)
+                        foreach (var device in snapshot[ri].Devices.ToList())
                         {
+                            if (!device.IsOnline) continue;
+
                             CAllDeviceSettings raw;
                             if (NativeInterop.pulsaar_get_all_settings(rctx, device.Slot, &raw) != PulsaarStatus.Ok)
                                 continue;
@@ -500,6 +549,9 @@ public partial class ReceiverStore : ObservableObject
             await Task.Delay(500);
 
         if (_settingsCache.TryGetValue(device.Id, out cached)) return cached;
+
+        // Device is offline and not in cache -- no point sending HID requests that will time out.
+        if (!device.IsOnline) return null;
 
         DeviceSettingsModel? settings = null;
         await Task.Run(() =>

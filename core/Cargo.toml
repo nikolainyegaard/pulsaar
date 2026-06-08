@@ -11,3 +11,6 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 hidapi = "2"
 thiserror = "1"
 log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_System_Console"] }

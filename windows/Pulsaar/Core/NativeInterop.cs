@@ -228,10 +228,14 @@ public static unsafe class NativeInterop
     [DllImport(Dll, CallingConvention = CC)] public static extern void pulsaar_close_receiver(nint rctx);
     [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_get_opened_receiver_info(nint rctx, COpenedReceiverInfo* out_info);
 
-    // Device enumeration
+    // Device enumeration (bulk)
     [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_enumerate_devices(nint rctx);
     [DllImport(Dll, CallingConvention = CC)] public static extern nuint pulsaar_get_device_count(nint rctx);
     [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_get_device_info(nint rctx, nuint index, CDeviceInfo* out_info);
+
+    // Device enumeration (streaming -- call start_enumerate once, then loop enumerate_next_device)
+    [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_start_enumerate(nint rctx);
+    [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_enumerate_next_device(nint rctx, CDeviceInfo* out_info);
 
     // Unpair
     [DllImport(Dll, CallingConvention = CC)] public static extern PulsaarStatus pulsaar_unpair_device(nint rctx, byte slot);
