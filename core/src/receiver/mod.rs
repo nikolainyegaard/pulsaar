@@ -205,20 +205,20 @@ impl Receiver {
             let bolt = match hidpp10::get_bolt_pairing_info_fast(&self.transport, slot) {
                 Ok(Some(p)) => p,
                 Ok(None) | Err(_) => {
-                    eprintln!("[PULSAAR][TIMING] slot {slot}: pairing=empty/err ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+                    eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: pairing=empty/err ({:.0}ms)", crate::t_ms(), t_slot.elapsed().as_secs_f64() * 1000.0);
                     return None;
                 }
             };
             let name = hidpp10::get_bolt_device_codename(&self.transport, slot)
                 .unwrap_or(None)
                 .unwrap_or_else(|| format!("Device {}", slot));
-            eprintln!("[PULSAAR][TIMING] slot {slot}: pairing+name ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+            eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: pairing+name ({:.0}ms)", crate::t_ms(), t_slot.elapsed().as_secs_f64() * 1000.0);
             (bolt.wpid, bolt.kind, bytes_to_hex(&bolt.serial), name)
         } else {
             let pairing = match hidpp10::get_pairing_info(&self.transport, slot) {
                 Ok(Some(p)) => p,
                 Ok(None) | Err(_) => {
-                    eprintln!("[PULSAAR][TIMING] slot {slot}: pairing=empty/err ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+                    eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: pairing=empty/err ({:.0}ms)", crate::t_ms(), t_slot.elapsed().as_secs_f64() * 1000.0);
                     return None;
                 }
             };
@@ -229,13 +229,13 @@ impl Receiver {
             let name = hidpp10::get_device_codename(&self.transport, slot)
                 .unwrap_or(None)
                 .unwrap_or_else(|| format!("Device {}", slot));
-            eprintln!("[PULSAAR][TIMING] slot {slot}: pairing+name ({:.0}ms)", t_slot.elapsed().as_secs_f64() * 1000.0);
+            eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: pairing+name ({:.0}ms)", crate::t_ms(), t_slot.elapsed().as_secs_f64() * 1000.0);
             (pairing.wpid, pairing.kind, serial, name)
         };
 
         let t_info = std::time::Instant::now();
         let (hidpp2_name, battery, firmware) = self.read_device_info(slot, &kind);
-        eprintln!("[PULSAAR][TIMING] slot {slot}: read_device_info ({:.0}ms)", t_info.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: read_device_info ({:.0}ms)", crate::t_ms(), t_info.elapsed().as_secs_f64() * 1000.0);
         let name = hidpp2_name.unwrap_or(name);
 
         Some(DeviceInfo { slot, name, kind, serial, wpid, battery, firmware })
@@ -270,7 +270,7 @@ impl Receiver {
         // Probe for HID++ 2.0 support.
         let t_feat = std::time::Instant::now();
         let feat_result = hidpp20::discover_features_fast(&self.transport, slot);
-        eprintln!("[PULSAAR][TIMING] slot {slot}: discover_features_fast={} ({:.0}ms)",
+        eprintln!("[PULSAAR][TIMING] T+{}ms slot {slot}: discover_features_fast={} ({:.0}ms)", crate::t_ms(),
             if feat_result.is_ok() { "ok" } else { "err" },
             t_feat.elapsed().as_secs_f64() * 1000.0);
         match feat_result {

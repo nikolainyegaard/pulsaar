@@ -517,16 +517,16 @@ pub unsafe extern "C" fn pulsaar_refresh_receivers(ctx: *mut PulsaarContext) -> 
     let result = catch_unwind(AssertUnwindSafe(|| {
         let t0 = std::time::Instant::now();
         ctx.api.refresh_devices().map_err(crate::error::Error::from)?;
-        eprintln!("[PULSAAR][TIMING] refresh_devices: {:.0}ms", t0.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[PULSAAR][TIMING] T+{}ms refresh_devices: {:.0}ms", crate::t_ms(), t0.elapsed().as_secs_f64() * 1000.0);
         let t1 = std::time::Instant::now();
         ctx.receivers = enumerate_receivers(&ctx.api);
-        eprintln!("[PULSAAR][TIMING] enumerate_receivers: {:.0}ms -> {} receiver(s)", t1.elapsed().as_secs_f64() * 1000.0, ctx.receivers.len());
+        eprintln!("[PULSAAR][TIMING] T+{}ms enumerate_receivers: {:.0}ms -> {} receiver(s)", crate::t_ms(), t1.elapsed().as_secs_f64() * 1000.0, ctx.receivers.len());
         let t2 = std::time::Instant::now();
         ctx.direct_devices = enumerate_direct_devices(&ctx.api, &mut ctx.unprobeable_bt_paths);
-        eprintln!("[PULSAAR][TIMING] enumerate_direct_devices: {:.0}ms -> {} device(s)", t2.elapsed().as_secs_f64() * 1000.0, ctx.direct_devices.len());
+        eprintln!("[PULSAAR][TIMING] T+{}ms enumerate_direct_devices: {:.0}ms -> {} device(s)", crate::t_ms(), t2.elapsed().as_secs_f64() * 1000.0, ctx.direct_devices.len());
         Ok::<_, crate::error::Error>(())
     }));
-    eprintln!("[PULSAAR][TIMING] pulsaar_refresh_receivers total: {:.0}ms", t.elapsed().as_secs_f64() * 1000.0);
+    eprintln!("[PULSAAR][TIMING] T+{}ms pulsaar_refresh_receivers total: {:.0}ms", crate::t_ms(), t.elapsed().as_secs_f64() * 1000.0);
     match result {
         Ok(Ok(())) => PulsaarStatus::Ok,
         Ok(Err(e)) => PulsaarStatus::from(e),
@@ -595,7 +595,7 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
     let t = std::time::Instant::now();
     match Receiver::open(&(*ctx).api, handle) {
         Ok(receiver) => {
-            eprintln!("[PULSAAR][TIMING] pulsaar_open_receiver[{}] '{}' ok ({:.0}ms)", index, handle.name, t.elapsed().as_secs_f64() * 1000.0);
+            eprintln!("[PULSAAR][TIMING] T+{}ms pulsaar_open_receiver[{}] '{}' ok ({:.0}ms)", crate::t_ms(), index, handle.name, t.elapsed().as_secs_f64() * 1000.0);
             if !status_out.is_null() { *status_out = PulsaarStatus::Ok; }
             Box::into_raw(Box::new(PulsaarReceiverContext {
                 receiver,
@@ -607,7 +607,7 @@ pub unsafe extern "C" fn pulsaar_open_receiver(
             }))
         }
         Err(e) => {
-            eprintln!("[PULSAAR][TIMING] pulsaar_open_receiver[{}] FAIL: {:?} ({:.0}ms)", index, e, t.elapsed().as_secs_f64() * 1000.0);
+            eprintln!("[PULSAAR][TIMING] T+{}ms pulsaar_open_receiver[{}] FAIL: {:?} ({:.0}ms)", crate::t_ms(), index, e, t.elapsed().as_secs_f64() * 1000.0);
             fail!(PulsaarStatus::from(e))
         }
     }
@@ -679,7 +679,7 @@ pub unsafe extern "C" fn pulsaar_start_enumerate(
         Ok(n)  => n,
         Err(_) => rctx.receiver.max_devices as usize,
     };
-    eprintln!("[PULSAAR][TIMING] pulsaar_start_enumerate: paired_count={}", paired_count);
+    eprintln!("[PULSAAR][TIMING] T+{}ms pulsaar_start_enumerate: paired_count={}", crate::t_ms(), paired_count);
     rctx.enum_slot         = 1;
     rctx.enum_paired_count = paired_count;
     rctx.enum_found        = 0;
@@ -708,11 +708,11 @@ pub unsafe extern "C" fn pulsaar_enumerate_next_device(
         let info = match catch_unwind(AssertUnwindSafe(|| rctx.receiver.enumerate_slot(slot))) {
             Ok(Some(i)) => i,
             _ => {
-                eprintln!("[PULSAAR][TIMING] enumerate_next slot {slot}: empty ({:.0}ms)", t.elapsed().as_secs_f64() * 1000.0);
+                eprintln!("[PULSAAR][TIMING] T+{}ms enumerate_next slot {slot}: empty ({:.0}ms)", crate::t_ms(), t.elapsed().as_secs_f64() * 1000.0);
                 continue;
             }
         };
-        eprintln!("[PULSAAR][TIMING] enumerate_next slot {slot}: '{}' ({:.0}ms)", info.name, t.elapsed().as_secs_f64() * 1000.0);
+        eprintln!("[PULSAAR][TIMING] T+{}ms enumerate_next slot {slot}: '{}' ({:.0}ms)", crate::t_ms(), info.name, t.elapsed().as_secs_f64() * 1000.0);
         rctx.enum_found += 1;
         *out = device_info_to_c(&info);
         rctx.devices.push(info);

@@ -21,9 +21,26 @@ public sealed partial class DeviceSettingsPanel : UserControl
 
     public void SetLoading()
     {
-        LoadingPanel.Visibility  = Visibility.Visible;
-        EmptyText.Visibility     = Visibility.Collapsed;
+        LoadingPanel.Visibility   = Visibility.Visible;
+        EmptyText.Visibility      = Visibility.Collapsed;
         SettingsScroll.Visibility = Visibility.Collapsed;
+        SettingsScroll.IsEnabled  = true;
+    }
+
+    // Device is offline and has no cached settings -- nothing to show yet.
+    public void SetOffline()
+    {
+        LoadingPanel.Visibility   = Visibility.Collapsed;
+        SettingsScroll.Visibility = Visibility.Collapsed;
+        EmptyText.Text            = "Device is offline";
+        EmptyText.Visibility      = Visibility.Visible;
+    }
+
+    // Lock or unlock all interactive controls.
+    // Locked = showing cached settings while device is offline; writes are suppressed.
+    public void SetLocked(bool locked)
+    {
+        SettingsScroll.IsEnabled = !locked;
     }
 
     public void ApplySettings(DeviceModel device, DeviceSettingsModel? settings)
@@ -32,10 +49,13 @@ public sealed partial class DeviceSettingsPanel : UserControl
         _settings = settings;
         _updating = true;
 
-        LoadingPanel.Visibility = Visibility.Collapsed;
+        // Reset transient states; caller calls SetLocked() after if needed.
+        SettingsScroll.IsEnabled = true;
+        LoadingPanel.Visibility  = Visibility.Collapsed;
 
         if (settings == null || !settings.HasAnySettings)
         {
+            EmptyText.Text            = "No configurable settings";
             EmptyText.Visibility      = Visibility.Visible;
             SettingsScroll.Visibility = Visibility.Collapsed;
             _updating = false;

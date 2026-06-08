@@ -138,8 +138,8 @@ fn discover_features_impl(transport: &Transport, device: u8, probe_timeout: Opti
         .map(|(&id, &idx)| format!("0x{:04X}@{}", id, idx))
         .collect();
     feat_list.sort();
-    eprintln!("[PULSAAR][HIDPP20] dev=0x{:02X} discover_features: {} feature(s): {}",
-        device, map.len(), feat_list.join(", "));
+    eprintln!("[PULSAAR][HIDPP20] T+{}ms dev=0x{:02X} discover_features: {} feature(s): {}",
+        crate::t_ms(), device, map.len(), feat_list.join(", "));
 
     Ok(map)
 }

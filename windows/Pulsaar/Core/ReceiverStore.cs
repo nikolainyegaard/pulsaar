@@ -49,6 +49,7 @@ public partial class ReceiverStore : ObservableObject
     private nint _ctx;
     private nint _pairingRctx;
     private bool _reloadInProgress;
+    private int  _reloadCount;
     private readonly List<nint> _eventListeners = [];
     private readonly Dictionary<string, DeviceSettingsModel> _settingsCache = [];
     private readonly DeviceCache _deviceCache = new();
@@ -56,12 +57,16 @@ public partial class ReceiverStore : ObservableObject
 
     // Timers and watchers
     private DispatcherTimer? _eventPollTimer;
+    private DispatcherTimer? _eventReloadTimer;
     private DispatcherTimer? _pairingTimer;
     private DispatcherTimer? _settingsDebounceTimer;
     private DispatcherTimer? _usbConnectTimer;
     private DeviceWatcher? _deviceWatcher;
     private bool _isEventPolling;
     private bool _isPairingPollRunning;
+    private bool _pendingEventReload;
+    private long _lastReloadCompletedTick;  // Environment.TickCount64 at last Reload end
+    private long _rawInputProbeTick;        // last time raw-input triggered a probe
     private (byte Slot, int ReceiverIndex) _pendingSettingsRefresh;
 
     // ---------------------------------------------------------------------------
@@ -82,18 +87,22 @@ public partial class ReceiverStore : ObservableObject
 
         StartUsbMonitoring();
         _ = Reload(false);
-
-        // Prefetch settings 1s after init (same delay as macOS)
-        _uiQueue.TryEnqueue(async () =>
-        {
-            await Task.Delay(1000);
-            await PrefetchSettings();
-        });
     }
 
     public void Dispose()
     {
-        StopEventListeners();
+        // Stop the timer so no new polls start. Then close handles directly without
+        // waiting for _isEventPolling -- at shutdown the 0ms-timeout poll completes
+        // in microseconds and the OS reclaims any still-open handles on process exit.
+        _eventPollTimer?.Stop();
+        _eventPollTimer = null;
+        unsafe
+        {
+            foreach (var listener in _eventListeners)
+                NativeInterop.pulsaar_close_event_listener(listener);
+        }
+        _eventListeners.Clear();
+
         CancelPairing();
         _deviceWatcher?.Stop();
         if (_ctx != nint.Zero)
@@ -116,9 +125,17 @@ public partial class ReceiverStore : ObservableObject
             "System.Devices.InterfaceClassGuid:=\"{4D1E55B2-F16F-11CF-88CB-001111000030}\"";
 
         _deviceWatcher = DeviceInformation.CreateWatcher(selector);
-        _deviceWatcher.Added   += (_, _) => ScheduleUsbConnectReload();
+        _deviceWatcher.Added += (_, _) =>
+        {
+            // Suppress the spurious Added from the brief re-enumeration set_notification_flags
+            // causes on the Bolt receiver. long reads are atomic on 64-bit Windows.
+            if (Environment.TickCount64 - _lastReloadCompletedTick < 3000) return;
+            ScheduleUsbConnectReload();
+        };
         _deviceWatcher.Removed += (_, _) =>
         {
+            // Same: suppress the Removed that follows set_notification_flags re-enumeration.
+            if (Environment.TickCount64 - _lastReloadCompletedTick < 3000) return;
             _uiQueue.TryEnqueue(() => _ = Reload(false));
         };
         _deviceWatcher.Start();
@@ -127,15 +144,18 @@ public partial class ReceiverStore : ObservableObject
 
     private void ScheduleUsbConnectReload()
     {
-        // 3s debounce -- same as macOS to absorb startup matching callbacks
+        // 3s debounce -- absorbs DeviceWatcher.Added callbacks for already-connected devices
+        // at startup. We capture the reload count at schedule time: if any reload has completed
+        // since then (e.g. the startup Reload), we skip -- the device state is already fresh.
         _uiQueue.TryEnqueue(() =>
         {
             _usbConnectTimer?.Stop();
+            var countAtSchedule = _reloadCount;
             _usbConnectTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(3) };
             _usbConnectTimer.Tick += (s, _) =>
             {
                 ((DispatcherTimer)s!).Stop();
-                if (!IsPrefetching)
+                if (!IsPrefetching && _reloadCount == countAtSchedule)
                 {
                     Debug.WriteLine("[PULSAAR][USB] debounced connect reload");
                     _ = Reload(false);
@@ -143,6 +163,56 @@ public partial class ReceiverStore : ObservableObject
             };
             _usbConnectTimer.Start();
         });
+    }
+
+    // Called from the WM_INPUT window proc (UI thread) when raw mouse/keyboard
+    // input arrives from a Logitech receiver. Triggers a re-enumerate so any
+    // device that woke from inactivity gets flipped online.
+    public void OnRawInputActivity()
+    {
+        // Fast exit: all devices already online, nothing to update.
+        if (!Receivers.Any(r => r.Devices.Any(d => !d.IsOnline))) return;
+
+        // Cooldown: once we've decided to probe, suppress further triggers for
+        // 3 seconds. Short enough that a second device waking up shortly after
+        // the first is still detected promptly; long enough to prevent repeated
+        // reloads while the user is actively using the newly-woken device.
+        if (Environment.TickCount64 - _rawInputProbeTick < 3_000) return;
+        _rawInputProbeTick = Environment.TickCount64;
+
+        // 1-second delay lets the waking device finish its power-on sequence
+        // before we attempt HID++ feature reads against its slots.
+        var t = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        t.Tick += (s, _) =>
+        {
+            ((DispatcherTimer)s!).Stop();
+            if (Receivers.Any(r => r.Devices.Any(d => !d.IsOnline)))
+                ScheduleEventReload();
+        };
+        t.Start();
+    }
+
+    private void ScheduleEventReload()
+    {
+        // Matches macOS scheduleEventReload: 750ms debounce so rapid online/offline bursts
+        // (e.g. several devices reconnecting at once) collapse into a single Reload.
+        //
+        // If a Reload is already in progress we cannot start another one immediately.
+        // Set _pendingEventReload so the in-progress Reload triggers a follow-up when done.
+        if (_reloadInProgress)
+        {
+            _pendingEventReload = true;
+            return;
+        }
+
+        _eventReloadTimer?.Stop();
+        _eventReloadTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(750) };
+        _eventReloadTimer.Tick += (s, _) =>
+        {
+            ((DispatcherTimer)s!).Stop();
+            _ = Reload(false);
+        };
+        _eventReloadTimer.Start();
     }
 
     // ---------------------------------------------------------------------------
@@ -160,7 +230,7 @@ public partial class ReceiverStore : ObservableObject
         Debug.WriteLine("[PULSAAR][STORE] Reload");
         if (showIndicator) IsLoading = true;
 
-        StopEventListeners();
+        await StopEventListeners();
 
         var newReceivers     = new List<ReceiverModel>();
         var newDirectDevices = new List<DirectDeviceModel>();
@@ -214,8 +284,10 @@ public partial class ReceiverStore : ObservableObject
             }
         });
 
-        // Show receivers immediately so the sidebar is not blank during device enumeration.
-        if (error == null)
+        // On the first load the sidebar is blank -- show the receiver name immediately so
+        // there is something visible while Phase 2 enumerates devices. On subsequent reloads
+        // the sidebar already has devices; keep showing them until the new data is ready.
+        if (error == null && _reloadCount == 0)
             Receivers = newReceivers;
 
         // Phase 2: Enumerate devices per receiver, one at a time.
@@ -247,6 +319,23 @@ public partial class ReceiverStore : ObservableObject
 
                 if (devStatus != PulsaarStatus.Ok || device == null) break;
 
+                // Offline hysteresis: if discover_features timed out but the same
+                // device was confirmed online within the last 60 seconds, keep it
+                // showing online. This prevents a device that briefly entered its
+                // inactivity sleep just before a reload from flashing offline.
+                if (!device.IsOnline)
+                {
+                    var prev = Receivers.SelectMany(r => r.Devices)
+                                        .FirstOrDefault(d => d.Id == device.Id);
+                    if (prev != null &&
+                        Environment.TickCount64 - prev.LastSeenOnlineTick < 180_000)
+                    {
+                        device.IsOnline = true;
+                        if (prev.Name.Length > device.Name.Length)
+                            device.Name = prev.Name;
+                    }
+                }
+
                 if (!device.IsOnline)
                 {
                     var cachedName = _deviceCache.Name(device.Serial);
@@ -261,8 +350,10 @@ public partial class ReceiverStore : ObservableObject
                     _deviceCache.UpdateBattery(device.Serial, device.Battery);
 
                 receiverModel.Devices.Add(device);
-                // Re-assign to trigger PropertyChanged -> BuildSidebar with the new device.
-                Receivers = new List<ReceiverModel>(newReceivers);
+                // On the first load, stream devices into the sidebar as they are found.
+                // On subsequent reloads, accumulate silently and do one atomic update below.
+                if (_reloadCount == 0)
+                    Receivers = new List<ReceiverModel>(newReceivers);
             }
 
             Debug.WriteLine($"[PULSAAR][STORE] receiver {myRi}: {receiverModel.Name} ({receiverModel.Devices.Count} device(s))");
@@ -289,22 +380,67 @@ public partial class ReceiverStore : ObservableObject
 
         Debug.WriteLine($"[PULSAAR][TIMING] Reload total: {swReload.ElapsedMilliseconds}ms");
 
+        // Snapshot which devices are currently online before we overwrite Receivers.
+        // Used below to detect devices that just woke up so we can refresh their settings.
+        var prevOnlineIds = _reloadCount > 0
+            ? Receivers.SelectMany(r => r.Devices).Where(d => d.IsOnline).Select(d => d.Id).ToHashSet()
+            : null;
+
+        // Subsequent reloads skipped the per-device Receivers update to avoid flicker.
+        // Do one atomic swap now that all device states are ready.
+        if (error == null && _reloadCount > 0)
+            Receivers = new List<ReceiverModel>(newReceivers);
+
+        // Record completion time so the DeviceWatcher.Removed handler can suppress the
+        // spurious removal event that set_notification_flags causes on the Bolt receiver.
+        _lastReloadCompletedTick = Environment.TickCount64;
+
         DirectDevices     = newDirectDevices;
         ErrorMessage      = error;
         IsLoading         = false;
+        _reloadCount++;
         _reloadInProgress = false;
 
-        RestartEventListeners();
+        await RestartEventListeners();
+
+        if (_reloadCount == 1)
+            _ = PrefetchSettings();
+
+        // Schedule a settings refresh for any device that just came online in this reload
+        // (e.g. woke from inactivity sleep). PrefetchSettings handles the first-load case.
+        if (prevOnlineIds != null)
+        {
+            foreach (var r in newReceivers)
+            foreach (var d in r.Devices)
+            {
+                if (d.IsOnline && !prevOnlineIds.Contains(d.Id))
+                {
+                    Debug.WriteLine($"[PULSAAR][STORE] {d.Name} woke up, scheduling settings refresh");
+                    ScheduleSettingsRefresh(d.Slot, d.ReceiverIndex);
+                }
+            }
+        }
+
+        // An online/offline event that arrived while this Reload was in progress was deferred.
+        // Fire the follow-up now that we're no longer in progress.
+        if (_pendingEventReload) { _pendingEventReload = false; ScheduleEventReload(); }
     }
 
     // ---------------------------------------------------------------------------
     // Event listeners
     // ---------------------------------------------------------------------------
 
-    private void StopEventListeners()
+    private async Task StopEventListeners()
     {
         _eventPollTimer?.Stop();
         _eventPollTimer = null;
+
+        // Polls use a 0ms timeout so PollEventListeners returns in microseconds.
+        // Yield the UI thread in short bursts until the in-flight poll's finally block
+        // has had a chance to run and set _isEventPolling = false, ensuring no handle
+        // is closed while it is still being referenced by the background thread.
+        while (_isEventPolling)
+            await Task.Delay(5);
 
         unsafe
         {
@@ -315,10 +451,17 @@ public partial class ReceiverStore : ObservableObject
         Debug.WriteLine("[PULSAAR][EVENTS] listeners stopped");
     }
 
-    private void RestartEventListeners()
+    private async Task RestartEventListeners()
     {
-        StopEventListeners();
+        await StopEventListeners();
+        // After the await we're back on the UI thread; call the sync opener directly.
+        OpenAndStartListeners();
+    }
 
+    // Sync helper: opens HID event handles and starts the poll timer.
+    // Must not be async so that the `unsafe { &local }` pattern is valid.
+    private void OpenAndStartListeners()
+    {
         unsafe
         {
             for (nuint i = 0; i < (nuint)Receivers.Count; i++)
@@ -353,6 +496,7 @@ public partial class ReceiverStore : ObservableObject
         if (_isEventPolling) return;
         _isEventPolling = true;
         try { await Task.Run(PollEventListeners); }
+        catch (Exception ex) { Debug.WriteLine($"[PULSAAR][EVENTS] poll error: {ex.Message}"); }
         finally { _isEventPolling = false; }
     }
 
@@ -364,7 +508,7 @@ public partial class ReceiverStore : ObservableObject
             if (snapshot[i] == nint.Zero) continue;
 
             CDeviceConnectionEvent evRaw;
-            unsafe { NativeInterop.pulsaar_poll_device_event(snapshot[i], 200, &evRaw); }
+            unsafe { NativeInterop.pulsaar_poll_device_event(snapshot[i], 0, &evRaw); }
 
             if (evRaw.event_type == PulsaarConnectionEvent.None) continue;
 
@@ -381,15 +525,28 @@ public partial class ReceiverStore : ObservableObject
 
         if (ev.event_type is PulsaarConnectionEvent.Online or PulsaarConnectionEvent.Offline)
         {
-            _ = Reload(false);
+            ScheduleEventReload();
             return;
         }
 
         if (ev.event_type == PulsaarConnectionEvent.SettingsChanged)
         {
-            // Discard persistent REPROG_CONTROLS_V4 (0x1B04) button events.
             var receiver = Receivers.ElementAtOrDefault(receiverIndex);
             var device   = receiver?.Devices.FirstOrDefault(d => d.Slot == ev.slot);
+
+            // Bolt receivers don't send 0x41 link-change notifications when a device
+            // reconnects -- it just starts sending unsolicited feature reports. Flip
+            // IsOnline in-place immediately instead of doing a full reload.
+            if (device != null && !device.IsOnline)
+            {
+                Debug.WriteLine($"[PULSAAR][EVENTS] slot={ev.slot} offline -> online (in-place)");
+                device.IsOnline = true;
+                Receivers = new List<ReceiverModel>(Receivers);
+                ScheduleSettingsRefresh(ev.slot, receiverIndex);
+                return;
+            }
+
+            // Discard persistent REPROG_CONTROLS_V4 (0x1B04) button events.
             if (device != null &&
                 _settingsCache.TryGetValue(device.Id, out var cached) &&
                 cached.ReprogControlsIdx != 0 &&
@@ -466,7 +623,7 @@ public partial class ReceiverStore : ObservableObject
         // Stop listeners on UI thread before handing off to background.
         // On Windows there is no exclusive-access restriction (unlike macOS),
         // but we still stop to avoid a double-open on the same receiver handle.
-        StopEventListeners();
+        await StopEventListeners();
 
         Debug.WriteLine("[PULSAAR][SETTINGS] prefetch start");
 
@@ -531,7 +688,7 @@ public partial class ReceiverStore : ObservableObject
         // Back on UI thread (synchronization context restores it after Task.Run await).
         IsPrefetching = false;
         SettingsCacheVersion++;
-        RestartEventListeners();
+        await RestartEventListeners();
         Debug.WriteLine("[PULSAAR][SETTINGS] prefetch complete");
     }
 
@@ -688,7 +845,7 @@ public partial class ReceiverStore : ObservableObject
 
     public async Task Unpair(DeviceModel device)
     {
-        StopEventListeners();
+        await StopEventListeners();
         bool ok = await WriteToDevice(device, (rctx) =>
         {
             unsafe { return NativeInterop.pulsaar_unpair_device(rctx, device.Slot); }
@@ -701,7 +858,7 @@ public partial class ReceiverStore : ObservableObject
         }
         else
         {
-            RestartEventListeners();
+            await RestartEventListeners();
         }
     }
 

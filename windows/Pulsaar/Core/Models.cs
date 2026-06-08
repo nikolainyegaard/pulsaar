@@ -218,7 +218,22 @@ public class DeviceModel
     public string ProductId { get; }    // 0xXXXX from wpid
     public ReceiverKind ReceiverKind { get; }
     public BatteryModel? Battery { get; set; }
-    public bool IsOnline { get; }       // true only when a live battery read succeeded
+
+    // Tracks when the device was last confirmed online so the 60-second offline
+    // hysteresis in Reload() can suppress false-offline states caused by a brief
+    // inactivity sleep occurring just before or during a reload.
+    public long LastSeenOnlineTick { get; private set; }
+
+    private bool _isOnline;
+    public bool IsOnline
+    {
+        get => _isOnline;
+        set
+        {
+            _isOnline = value;
+            if (value) LastSeenOnlineTick = Environment.TickCount64;
+        }
+    }
 
     public string ConnectionLabel => ReceiverKind switch
     {
@@ -255,7 +270,8 @@ public class DeviceModel
     {
         Id = id; ReceiverIndex = receiverIndex; Slot = slot; Kind = kind;
         Name = name; Serial = serial; ProductId = productId; ReceiverKind = receiverKind;
-        Battery = battery; IsOnline = isOnline;
+        Battery = battery;
+        IsOnline = isOnline;  // setter seeds LastSeenOnlineTick when true
     }
 }
 

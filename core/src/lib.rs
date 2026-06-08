@@ -11,6 +11,16 @@ pub use devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
 pub use receiver::{ReceiverHandle, ReceiverKind, Receiver, enumerate_receivers};
 pub use direct::DirectDeviceInfo;
 
+use std::sync::OnceLock;
+use std::time::Instant;
+
+static PROCESS_START: OnceLock<Instant> = OnceLock::new();
+
+/// Milliseconds since the first call (approximately process start). Used for log timestamps.
+pub fn t_ms() -> u64 {
+    PROCESS_START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
 /// Initialize the library and return a HID API instance.
 ///
 /// Must be called before any other pulsaar_core functions. On macOS, this sets
