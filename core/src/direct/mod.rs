@@ -100,7 +100,7 @@ pub fn enumerate_direct_devices(
             continue;
         }
 
-        let transport = match Transport::open(api, &path) {
+        let transport = match Transport::open(api, &path, &path) {
             Ok(t)  => t,
             Err(_) => {
                 unprobeable.insert(path);

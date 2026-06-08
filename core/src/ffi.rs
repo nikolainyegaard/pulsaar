@@ -427,7 +427,7 @@ fn receiver_handle_to_c(h: &ReceiverHandle) -> CReceiverInfo {
         product_id: h.product_id,
         kind:       receiver_kind_to_u8(h.kind),
         name:       str_to_buf(h.name),
-        path:       str_to_buf(&h.path),
+        path:       str_to_buf(&h.write_path),
     }
 }
 

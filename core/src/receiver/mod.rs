@@ -58,7 +58,11 @@ pub enum ReceiverKind {
 /// Lightweight descriptor returned from enumerate_receivers before opening.
 #[derive(Debug, Clone)]
 pub struct ReceiverHandle {
-    pub path: String,
+    /// HID path for sending commands (usage=0x0001 on Windows, the sole path elsewhere).
+    pub write_path: String,
+    /// HID path for receiving replies. Equals write_path on macOS/Linux; on Windows HID++
+    /// receivers replies come from the usage=0x0002 collection of the same interface.
+    pub read_path: String,
     pub product_id: u16,
     pub kind: ReceiverKind,
     pub name: &'static str,
@@ -104,24 +108,64 @@ pub struct Receiver {
 /// Filters to usage_page=0xFF00, usage=0x0001 (the HID++ vendor interface) to
 /// get exactly one entry per physical receiver and avoid the HID interfaces
 /// that require input-monitoring permissions on macOS.
+///
+/// On Windows, Logitech USB receivers expose their vendor interface as two HID
+/// top-level collections: usage=0x0001 (output/command direction) and usage=0x0002
+/// (input/reply direction). We find both so Transport can use split handles.
+/// On macOS/Linux a single path covers both directions; read_path == write_path.
 pub fn enumerate_receivers(api: &HidApi) -> Vec<ReceiverHandle> {
+    // Collect usage=0x0002 paths as candidates for the read handle on Windows.
+    let read_candidates: Vec<(u16, String)> = api.device_list()
+        .filter(|d| d.vendor_id() == LOGITECH_VID)
+        .filter(|d| d.usage_page() == 0xFF00 && d.usage() == 0x0002)
+        .filter(|d| RECEIVERS.iter().any(|&(p, _, _)| p == d.product_id()))
+        .map(|d| (d.product_id(), d.path().to_string_lossy().into_owned()))
+        .collect();
+
     api.device_list()
         .filter(|d| d.vendor_id() == LOGITECH_VID)
         .filter(|d| d.usage_page() == 0xFF00 && d.usage() == 0x0001)
         .filter_map(|d| {
             let pid = d.product_id();
             RECEIVERS.iter().find(|&&(p, _, _)| p == pid).map(|&(_, kind, name)| {
-                let path = d.path().to_string_lossy().into_owned();
-                ReceiverHandle { path, product_id: pid, kind, name }
+                let write_path = d.path().to_string_lossy().into_owned();
+
+                // Match a read candidate by same PID and shared hardware-instance prefix.
+                // Windows paths: "\\?\HID#...#7&391789b7&0&0000#{...}" -- the "7&391789b7"
+                // part identifies the physical interface; Col01 ends in &0&0000, Col02 in &0&0001.
+                let hw_base = hw_instance_base(&write_path).to_owned();
+                let read_path = read_candidates.iter()
+                    .find(|(rpid, rpath)| *rpid == pid && rpath.contains(&hw_base))
+                    .map(|(_, rpath)| rpath.clone())
+                    .unwrap_or_else(|| write_path.clone());
+
+                ReceiverHandle { write_path, read_path, product_id: pid, kind, name }
             })
         })
         .collect()
 }
 
+/// Extract the device-instance base from a Windows HID path for interface matching.
+/// "\\?\HID#...#7&391789b7&0&0000#{...}" returns "7&391789b7".
+/// For non-Windows paths the full path is returned (matching falls back to exact equality).
+fn hw_instance_base(path: &str) -> &str {
+    let mut parts = path.splitn(4, '#');
+    let _ = parts.next(); // "\\?\HID"
+    let _ = parts.next(); // device-ID segment
+    if let Some(instance) = parts.next() {
+        // Strip the "&0&XXXX" collection-index suffix from "7&391789b7&0&0000".
+        if let Some(idx) = instance.rfind("&0&") {
+            return &instance[..idx];
+        }
+        return instance;
+    }
+    path
+}
+
 impl Receiver {
     /// Open a receiver by its handle descriptor.
     pub fn open(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
-        let transport = Transport::open(api, &handle.path)?;
+        let transport = Transport::open(api, &handle.write_path, &handle.read_path)?;
 
         // Bolt uses a different register for serial and does not support the standard
         // RECEIVER_INFO sub-register 0x03 that Unifying/Nano/LightSpeed use.
@@ -154,23 +198,27 @@ impl Receiver {
 
         for slot in 1..=self.max_devices {
             // Bolt uses different pairing sub-registers and embeds serial in the pairing response.
+            // Per-slot errors skip the slot rather than aborting the whole enumeration.
             let (wpid, kind, serial, name) = if self.kind == ReceiverKind::Bolt {
-                let bolt = match hidpp10::get_bolt_pairing_info(&self.transport, slot)? {
-                    Some(p) => p,
-                    None => continue,
+                let bolt = match hidpp10::get_bolt_pairing_info(&self.transport, slot) {
+                    Ok(Some(p)) => p,
+                    Ok(None) | Err(_) => continue,
                 };
-                let name = hidpp10::get_bolt_device_codename(&self.transport, slot)?
+                let name = hidpp10::get_bolt_device_codename(&self.transport, slot)
+                    .unwrap_or(None)
                     .unwrap_or_else(|| format!("Device {}", slot));
                 (bolt.wpid, bolt.kind, bytes_to_hex(&bolt.serial), name)
             } else {
-                let pairing = match hidpp10::get_pairing_info(&self.transport, slot)? {
-                    Some(p) => p,
-                    None => continue,
+                let pairing = match hidpp10::get_pairing_info(&self.transport, slot) {
+                    Ok(Some(p)) => p,
+                    Ok(None) | Err(_) => continue,
                 };
-                let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)?
+                let serial = hidpp10::get_extended_pairing_info(&self.transport, slot)
+                    .unwrap_or(None)
                     .map(|s| bytes_to_hex(&s))
                     .unwrap_or_default();
-                let name = hidpp10::get_device_codename(&self.transport, slot)?
+                let name = hidpp10::get_device_codename(&self.transport, slot)
+                    .unwrap_or(None)
                     .unwrap_or_else(|| format!("Device {}", slot));
                 (pairing.wpid, pairing.kind, serial, name)
             };

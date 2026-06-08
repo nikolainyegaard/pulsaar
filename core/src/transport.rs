@@ -13,19 +13,38 @@ const RECEIVER_TIMEOUT: Duration = Duration::from_millis(900);
 const DEVICE_TIMEOUT: Duration = Duration::from_millis(4000);
 
 pub struct Transport {
-    device: HidDevice,
+    write_dev: HidDevice,
+    // None means use write_dev for reads (single-path devices: macOS, Linux, Bluetooth).
+    // Some means a separate handle for the input collection (Windows HID++ receivers).
+    read_dev: Option<HidDevice>,
+}
+
+fn open_hid(api: &HidApi, path: &str) -> Result<HidDevice> {
+    let c_path = CString::new(path).map_err(|_| Error::InvalidResponse)?;
+    Ok(api.open_path(c_path.as_c_str())?)
 }
 
 impl Transport {
-    pub fn open(api: &HidApi, path: &str) -> Result<Self> {
-        let c_path = CString::new(path).map_err(|_| Error::InvalidResponse)?;
-        let device = api.open_path(c_path.as_c_str())?;
-        Ok(Self { device })
+    /// Open a transport. On Windows HID++ receivers the write and read paths differ
+    /// (usage=0x0001 for commands, usage=0x0002 for replies). Pass the same string
+    /// for both on platforms/devices that use a single bidirectional path.
+    pub fn open(api: &HidApi, write_path: &str, read_path: &str) -> Result<Self> {
+        let write_dev = open_hid(api, write_path)?;
+        let read_dev = if read_path != write_path {
+            Some(open_hid(api, read_path)?)
+        } else {
+            None
+        };
+        Ok(Self { write_dev, read_dev })
+    }
+
+    fn read_dev(&self) -> &HidDevice {
+        self.read_dev.as_ref().unwrap_or(&self.write_dev)
     }
 
     fn read_one(&self, timeout_ms: i32) -> Result<Option<Message>> {
         let mut buf = [0u8; MAX_READ_SIZE];
-        let n = self.device.read_timeout(&mut buf, timeout_ms)?;
+        let n = self.read_dev().read_timeout(&mut buf, timeout_ms)?;
         if n == 0 {
             return Ok(None);
         }
@@ -33,7 +52,7 @@ impl Transport {
     }
 
     pub fn write(&self, msg: &Message) -> Result<()> {
-        self.device.write(msg.as_bytes())?;
+        self.write_dev.write(msg.as_bytes())?;
         Ok(())
     }
 

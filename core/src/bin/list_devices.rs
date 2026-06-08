@@ -10,6 +10,21 @@ fn main() {
         }
     };
 
+    // Dump every Logitech HID path so we can see what Windows exposes.
+    println!("=== All Logitech HID paths ===");
+    for d in api.device_list() {
+        if d.vendor_id() == 0x046D {
+            println!(
+                "  pid={:#06X} usage_page={:#06X} usage={:#06X}  path={}",
+                d.product_id(),
+                d.usage_page(),
+                d.usage(),
+                d.path().to_string_lossy(),
+            );
+        }
+    }
+    println!();
+
     let receivers = pulsaar_core::enumerate_receivers(&api);
     if receivers.is_empty() {
         println!("no receivers found");
