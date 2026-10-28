@@ -1,8 +1,9 @@
 name: ci
 
+# Every branch, so work branches get the macOS and Windows checks before a PR.
 on:
   push:
-    branches: [master]
+    branches: ["**"]
   pull_request:
 
 jobs:
