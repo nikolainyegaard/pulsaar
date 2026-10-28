@@ -203,6 +203,10 @@ struct Worker {
     session: Option<PairingSession>,
     reload_at: Option<Instant>,
     refresh_at: HashMap<DeviceKey, Instant>,
+    /// Devices whose link came up, read once they have settled.
+    linked_at: HashMap<DeviceKey, Instant>,
+    /// Serials whose active host slot got this computer's name this run.
+    named: HashSet<String>,
     next_plug_check: Instant,
 }
 
@@ -219,6 +223,8 @@ impl Worker {
             session: None,
             reload_at: None,
             refresh_at: HashMap::new(),
+            linked_at: HashMap::new(),
+            named: HashSet::new(),
             next_plug_check: Instant::now() + PLUG_CHECK,
         }
     }
@@ -275,14 +281,10 @@ impl Worker {
             self.reload();
             return;
         }
-        let due: Vec<DeviceKey> = self
-            .refresh_at
-            .iter()
-            .filter(|(_, t)| **t <= now)
-            .map(|(k, _)| *k)
-            .collect();
-        for key in due {
-            self.refresh_at.remove(&key);
+        for key in take_due(&mut self.linked_at, now) {
+            self.came_online(key);
+        }
+        for key in take_due(&mut self.refresh_at, now) {
             self.read_settings(key, false);
         }
         if now >= self.next_plug_check && self.session.is_none() {
@@ -296,12 +298,15 @@ impl Worker {
 
     fn poll_events(&mut self, now: Instant) {
         let mut reload = false;
+        let mut links = Vec::new();
         let mut refresh = Vec::new();
         for (i, r) in self.receivers.iter().enumerate() {
             // Non-blocking reads; a burst longer than this waits for the next tick.
             for _ in 0..32 {
                 match r.poll_device_event(0) {
-                    Ok(Some(DeviceEvent::LinkChange { .. })) => reload = true,
+                    Ok(Some(DeviceEvent::LinkChange { slot, online })) => {
+                        links.push((DeviceKey { receiver: i, slot }, online));
+                    }
                     Ok(Some(DeviceEvent::SettingsChanged {
                         slot,
                         feature_index,
@@ -315,11 +320,31 @@ impl Worker {
                 }
             }
         }
+        for (key, online) in links {
+            let known = lock(&self.model).device(key).map(|d| d.online);
+            match (known, online) {
+                // A slot the model does not have: a device paired elsewhere.
+                (None, _) => reload = true,
+                (Some(false), true) => {
+                    self.linked_at.insert(key, now + DEBOUNCE);
+                }
+                (Some(_), false) => {
+                    self.linked_at.remove(&key);
+                    self.went_offline(key);
+                }
+                (Some(true), true) => {}
+            }
+        }
         if reload && self.reload_at.is_none() {
             self.reload_at = Some(now + DEBOUNCE);
         }
         let model = lock(&self.model);
         for (key, feature_index) in refresh {
+            // A device that sends anything is online.
+            if model.device(key).is_some_and(|d| !d.online) {
+                self.linked_at.entry(key).or_insert(now + DEBOUNCE);
+                continue;
+            }
             // Persistent 0x1B04 diversions report every button click under the
             // REPROG_CONTROLS index; those are not settings changes.
             let is_click = model.settings.get(&key).is_some_and(|s| {
@@ -331,11 +356,45 @@ impl Worker {
         }
     }
 
+    /// The receiver lost the device: show it offline with its last battery.
+    fn went_offline(&self, key: DeviceKey) {
+        self.update(|m| {
+            m.settings.remove(&key);
+            let had_battery = m.device(key).is_some_and(|d| d.battery.is_some());
+            if let Some(d) = device_mut(m, key) {
+                d.online = false;
+            }
+            if had_battery {
+                m.cached_battery.insert(key);
+            }
+        });
+    }
+
+    /// The device linked again: read its name, battery and settings.
+    fn came_online(&mut self, key: DeviceKey) {
+        let Some(mut info) = self
+            .receivers
+            .get(key.receiver)
+            .and_then(|r| r.enumerate_slot(key.slot, Some(true)))
+        else {
+            return;
+        };
+        self.apply_cache(&mut info);
+        self.update(|m| {
+            m.cached_battery.remove(&key);
+            if let Some(d) = device_mut(m, key) {
+                *d = info;
+            }
+        });
+        self.read_settings(key, true);
+    }
+
     /// Reopen every receiver, enumerate devices and direct Bluetooth devices,
     /// then read settings of online devices.
     fn reload(&mut self) {
         self.reload_at = None;
         self.refresh_at.clear();
+        self.linked_at.clear();
         // Close before reopening: macOS allows one handle per receiver.
         self.receivers.clear();
         let _ = self.api.refresh_devices();
@@ -368,12 +427,13 @@ impl Worker {
             };
             self.update(|m| m.receivers.push(view));
             let paired = r.get_paired_device_count();
+            let links = r.link_states(paired);
             let mut found = 0;
             for slot in 1..=r.max_devices {
                 if found >= paired {
                     break;
                 }
-                if let Some(mut info) = r.enumerate_slot(slot) {
+                if let Some(mut info) = r.enumerate_slot(slot, links.get(&slot).copied()) {
                     found += 1;
                     let cached = self.apply_cache(&mut info);
                     let key = DeviceKey {
@@ -456,8 +516,8 @@ impl Worker {
     /// the two writes the SwiftUI app did when it first saw a device: rewrite
     /// the scroll mode, which clears the HID++ target bit that otherwise makes
     /// scroll events vanish while Pulsaar runs, and write this computer's name
-    /// to the active host slot.
-    fn read_settings(&self, key: DeviceKey, on_connect: bool) {
+    /// to the active host slot, once per device per run.
+    fn read_settings(&mut self, key: DeviceKey, on_connect: bool) {
         let Some(r) = self.receivers.get(key.receiver) else {
             return;
         };
@@ -478,9 +538,12 @@ impl Worker {
                 .hosts
                 .as_ref()
                 .and_then(|h| h.iter().find(|h| h.is_active));
+            let serial = lock(&self.model).device(key).map(|d| d.serial.clone());
             let name = pulsaar_native::hostname();
-            if let (Some(host), false) = (host, name.is_empty()) {
-                let _ = r.set_host_name(key.slot, host.slot, &name);
+            if let (Some(host), Some(serial), false) = (host, serial, name.is_empty()) {
+                if self.named.insert(serial) {
+                    let _ = r.set_host_name(key.slot, host.slot, &name);
+                }
             }
         }
         self.update(|m| {
@@ -625,6 +688,27 @@ impl Worker {
             });
         }
     }
+}
+
+fn device_mut(m: &mut Model, key: DeviceKey) -> Option<&mut DeviceInfo> {
+    m.receivers
+        .get_mut(key.receiver)?
+        .devices
+        .iter_mut()
+        .find(|d| d.slot == key.slot)
+}
+
+/// Remove and return the keys whose time has come.
+fn take_due(timers: &mut HashMap<DeviceKey, Instant>, now: Instant) -> Vec<DeviceKey> {
+    let due: Vec<DeviceKey> = timers
+        .iter()
+        .filter(|(_, t)| **t <= now)
+        .map(|(k, _)| *k)
+        .collect();
+    for k in &due {
+        timers.remove(k);
+    }
+    due
 }
 
 /// Apply a successful write to the cached settings.

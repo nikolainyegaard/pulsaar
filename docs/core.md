@@ -56,6 +56,7 @@ Library implementing HID++ 1.0 and 2.0 over hidapi, used directly by the egui UI
 Run from the workspace root with a receiver attached:
 
 - `cargo run --bin list_devices` lists receivers and devices
+- `cargo run --bin listen [SECONDS]` asks each receiver for link notifications, then prints every HID++ and DJ notification; wake, sleep or switch a device meanwhile
 - `cargo run --bin probe_settings` probes and writes HID++ features with write tests and readback; this confirmed the K375S host-prefixed write and the Backlight2 bits 0-1 encoding
 
 ## Debug logging

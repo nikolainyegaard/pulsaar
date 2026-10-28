@@ -3,6 +3,10 @@ pub const SHORT_REPORT_ID: u8 = 0x10;
 pub const LONG_REPORT_ID: u8 = 0x11;
 pub const SHORT_MESSAGE_SIZE: usize = 7;
 pub const LONG_MESSAGE_SIZE: usize = 20;
+/// DJ report: what a receiver sends in DJ mode, which the Linux kernel driver
+/// hid-logitech-dj switches it to. Connection changes arrive this way there.
+pub const DJ_REPORT_ID: u8 = 0x20;
+pub const DJ_MESSAGE_SIZE: usize = 15;
 pub const MAX_READ_SIZE: usize = 32;
 
 /// The HID++ device number used when addressing the receiver itself.
@@ -70,11 +74,18 @@ impl Message {
         let len = match *raw.first()? {
             SHORT_REPORT_ID if raw.len() >= SHORT_MESSAGE_SIZE => SHORT_MESSAGE_SIZE,
             LONG_REPORT_ID if raw.len() >= LONG_MESSAGE_SIZE => LONG_MESSAGE_SIZE,
+            DJ_REPORT_ID if raw.len() >= DJ_MESSAGE_SIZE => DJ_MESSAGE_SIZE,
             _ => return None,
         };
         let mut buf = [0u8; LONG_MESSAGE_SIZE];
         buf[..len].copy_from_slice(&raw[..len]);
         Some(Self { buf, len })
+    }
+
+    /// A DJ report rather than HID++. Its sub_id is the DJ report type and
+    /// never answers a request.
+    pub fn is_dj(&self) -> bool {
+        self.buf[0] == DJ_REPORT_ID
     }
 
     pub fn as_bytes(&self) -> &[u8] {

@@ -1,6 +1,7 @@
 // Receiver enumeration and device management.
 // Reference: reference/lib/logitech_receiver/receiver.py, base_usb.py
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use hidapi::HidApi;
@@ -219,9 +220,31 @@ impl Receiver {
         hidpp10::get_paired_device_count(&self.transport).unwrap_or(self.max_devices as usize)
     }
 
+    /// Ask the receiver for the link state of its paired devices and collect
+    /// the answers: slot to linked. Waits until `expected` slots answered or
+    /// 300 ms passed. Empty when the receiver does not support the request.
+    pub fn link_states(&self, expected: usize) -> HashMap<u8, bool> {
+        let mut states = HashMap::new();
+        if self.trigger_link_notifications().is_err() {
+            return states;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_millis(300);
+        while states.len() < expected && std::time::Instant::now() < deadline {
+            if let Ok(Some(DeviceEvent::LinkChange { slot, online })) = self.poll_device_event(20) {
+                states.insert(slot, online);
+            }
+        }
+        states
+    }
+
     /// Probe one slot and return its DeviceInfo, or None if the slot is empty or errored.
     /// Contains all the per-slot pairing + HID++ 2.0 discovery logic.
-    pub fn enumerate_slot(&self, slot: u8) -> Option<DeviceInfo> {
+    ///
+    /// `linked` is the receiver's link state for the slot from `link_states`.
+    /// An unlinked device is not probed. A linked one is probed with the full
+    /// device timeout, since a dozing device can take most of a second to
+    /// answer. Without it, a probe answered within 500 ms counts as online.
+    pub fn enumerate_slot(&self, slot: u8, linked: Option<bool>) -> Option<DeviceInfo> {
         let t_slot = std::time::Instant::now();
 
         let (wpid, kind, serial, name) = if self.kind == ReceiverKind::Bolt {
@@ -273,7 +296,7 @@ impl Receiver {
         };
 
         let t_info = std::time::Instant::now();
-        let (hidpp2_name, battery, online) = self.read_device_info(slot);
+        let (hidpp2_name, battery, online) = self.read_device_info(slot, linked);
         eprintln!(
             "[PULSAAR][TIMING] T+{}ms slot {slot}: read_device_info ({:.0}ms)",
             crate::t_ms(),
@@ -311,7 +334,7 @@ impl Receiver {
             if found >= paired_count {
                 break;
             }
-            if let Some(info) = self.enumerate_slot(slot) {
+            if let Some(info) = self.enumerate_slot(slot, None) {
                 devices.push(info);
                 found += 1;
             }
@@ -326,13 +349,25 @@ impl Receiver {
     }
 
     /// Attempt to read name and battery from a device, trying HID++ 2.0 first.
-    /// The third value is true when the device answered HID++ 2.0, i.e. it is online.
-    fn read_device_info(&self, slot: u8) -> (Option<String>, Option<Battery>, bool) {
-        // Probe for HID++ 2.0 support with a short timeout so offline devices are
+    /// The third value is the online state: `linked` when known, otherwise
+    /// whether the device answered HID++ 2.0.
+    fn read_device_info(
+        &self,
+        slot: u8,
+        linked: Option<bool>,
+    ) -> (Option<String>, Option<Battery>, bool) {
+        if linked == Some(false) {
+            return (None, None, false);
+        }
+        // Without a link state, probe with a short timeout so offline devices are
         // skipped in ~500ms instead of waiting for the full DEVICE_TIMEOUT.
+        let probe = if linked.is_some() {
+            None
+        } else {
+            Some(Duration::from_millis(500))
+        };
         let t_feat = std::time::Instant::now();
-        let feat_result =
-            hidpp20::discover_features(&self.transport, slot, Some(Duration::from_millis(500)));
+        let feat_result = hidpp20::discover_features(&self.transport, slot, probe);
         eprintln!(
             "[PULSAAR][TIMING] T+{}ms slot {slot}: discover_features={} ({:.0}ms)",
             crate::t_ms(),
@@ -371,7 +406,7 @@ impl Receiver {
                 // Skip the HID++ 1.0 battery fallback -- those requests go to the device
                 // slot and each times out at DEVICE_TIMEOUT for offline Bolt/Unifying devices.
                 // Battery for HID++ 1.0 devices comes from prefetch/cache instead.
-                (None, None, false)
+                (None, None, linked == Some(true))
             }
         }
     }
@@ -488,6 +523,7 @@ impl Receiver {
 
 // Sub-IDs for receiver notifications.
 const NOTIF_DJ_PAIRING: u8 = 0x41; // device connection/disconnection
+const DJ_CONNECTION_STATUS: u8 = 0x42; // DJ report type: link established or lost
 const NOTIF_PAIRING_LOCK: u8 = 0x4A; // Unifying: lock opened/closed
 const NOTIF_POWER: u8 = 0x4B; // device powered on/off
 const NOTIF_PASSKEY_REQUEST: u8 = 0x4D; // Bolt: passkey request
@@ -576,9 +612,10 @@ impl Receiver {
             None => return Ok(PairingEvent::Waiting),
         };
 
-        // Ignore HID++ reply messages (sub_id >= 0x80); we only care about notifications.
+        // Ignore HID++ reply messages (sub_id >= 0x80) and DJ reports; we only
+        // care about HID++ notifications.
         let sub_id = msg.sub_id();
-        if sub_id >= 0x80 {
+        if sub_id >= 0x80 || msg.is_dj() {
             return Ok(PairingEvent::Waiting);
         }
 
@@ -739,6 +776,12 @@ impl Receiver {
         Ok(recv)
     }
 
+    /// Make the receiver report the link state of every paired device as
+    /// `poll_device_event` link changes.
+    pub fn trigger_link_notifications(&self) -> Result<()> {
+        hidpp10::trigger_link_notifications(&self.transport)
+    }
+
     /// Set the notification flags to NOTIF_WIRELESS only, as `open_for_events`
     /// does; call after pairing, which sets more flags.
     pub fn listen_for_events(&self) {
@@ -774,6 +817,17 @@ impl Receiver {
         if slot == 0xFF || slot == 0 {
             return Ok(None);
         } // receiver-level, not a device
+          // DJ mode (Linux kernel driver): 0x42 is the connection status, bit 0
+          // of the first byte set means the link is lost (Solaar's
+          // _process_dj_notification). Types below 0x10 are forwarded input.
+        if msg.is_dj() {
+            return Ok(
+                (sub_id == DJ_CONNECTION_STATUS).then(|| DeviceEvent::LinkChange {
+                    slot,
+                    online: msg.address() & 0x01 == 0,
+                }),
+            );
+        }
 
         match sub_id {
             NOTIF_DJ_PAIRING => {

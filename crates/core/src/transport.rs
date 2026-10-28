@@ -127,6 +127,11 @@ impl Transport {
                 None => continue,
             };
 
+            // DJ reports (input and connection notices) never answer a request.
+            if msg.is_dj() {
+                continue;
+            }
+
             // Skip messages for other devices.
             // Bluetooth devices sometimes return 0x00 instead of 0xFF for the receiver.
             let rep_dev = msg.device();

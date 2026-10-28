@@ -10,9 +10,15 @@ Reversed 2026-10-28. The original plan was one SwiftUI app, one WinUI 3 app and 
 
 The SwiftUI app opened a receiver for each read and stopped its event listeners around every read, because macOS allows one open handle per receiver. The worker opens each receiver once with `open_for_events` and uses that handle for everything, so the prefetch races, `isPrefetching` waits and listener restarts are gone. Notifications that arrive during a request are skipped by `Transport::request`, as they were before. Pairing sets more notification flags; `listen_for_events` puts them back when pairing ends.
 
-## Settings are read only for online devices
+## Online means linked, as the receiver reports it
 
-`DeviceInfo::online` is true when the device answered HID++ 2.0 during enumeration. Reading settings of an offline device waits the full 4 s device timeout, so the worker skips them; a link-change notification triggers a reload, which reads the device once it is online. On first read the worker rewrites the scroll mode (clears the HID++ target bit) and writes the host name to the active host slot, as the macOS prefetch did.
+Writing 0x02 to receiver register 0x02 makes the receiver send a 0x41 notification per paired device with its link state (Solaar's notify_devices); `Receiver::link_states` does this at every reload. Before 2026-10-28 a device counted as online when it answered a 500 ms HID++ 2.0 probe, but a linked, dozing Bolt mouse takes 0.8 to 1 s and a keyboard up to 2 s, so both showed offline, and since their link never dropped no notification ever corrected it. Linked devices are now probed with the full 4 s timeout, unlinked ones not at all. After the reload, 0x41 notifications update one device at a time: offline at once, online after the 750 ms debounce, followed by a read of name, battery and settings.
+
+On first read the worker rewrites the scroll mode (clears the HID++ target bit) and writes the host name to the active host slot, the host name once per device per run.
+
+## DJ reports
+
+With the kernel's hid-logitech-dj driver bound (not the case on the author's Fedora laptop, where the receivers use hid-generic), receivers run in DJ mode and send 15-byte reports with ID 0x20. Type 0x42 is the connection status (bit 0 of the first byte set means link lost); types below 0x10 are forwarded input. The core parses them so link changes arrive either way, and `Transport::request` and pairing skip them.
 
 ## The release profile unwinds
 
