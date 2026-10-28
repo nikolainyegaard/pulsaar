@@ -90,7 +90,19 @@ impl PulsaarApp {
             .min_size(220.0)
             .default_size(280.0)
             .show(root, |ui| {
+                // Registered before the rows, so a row on top takes its own
+                // clicks and only blank space reaches this one.
+                let blank = ui.interact(
+                    ui.max_rect(),
+                    ui.scope_id().with("blank"),
+                    egui::Sense::click(),
+                );
                 egui::ScrollArea::vertical().show(ui, |ui| self.sidebar(ui));
+                if blank.clicked() {
+                    self.selection = None;
+                    self.dpi_drag = None;
+                    self.level_drag = None;
+                }
             });
         egui::CentralPanel::default().show(root, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.detail(ui));
