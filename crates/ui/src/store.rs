@@ -546,6 +546,18 @@ impl Worker {
                 }
             }
         }
+        // The battery comes with the settings read; show it and remember it.
+        let device = lock(&self.model).device(key).cloned();
+        if let (Some(mut info), Some(battery)) = (device, settings.battery.clone()) {
+            info.battery = Some(battery);
+            self.apply_cache(&mut info);
+            self.update(|m| {
+                m.cached_battery.remove(&key);
+                if let Some(d) = device_mut(m, key) {
+                    d.battery = info.battery;
+                }
+            });
+        }
         self.update(|m| {
             m.settings.insert(key, settings);
         });

@@ -97,6 +97,9 @@ pub struct AllDeviceSettings {
     /// Used to filter out button-CID HID++ notifications (which look like settings
     /// change events) in the event listener.
     pub reprog_controls_idx: u8,
+    /// Read with the same feature map, so a device notification (a charger
+    /// plugged in, the level dropping) refreshes the battery too.
+    pub battery: Option<Battery>,
 }
 
 /// Event returned by poll_device_event.
@@ -386,19 +389,7 @@ impl Receiver {
                             .ok()
                             .flatten()
                     });
-                let battery = hidpp20::get_unified_battery(&self.transport, slot, &features)
-                    .ok()
-                    .flatten()
-                    .or_else(|| {
-                        hidpp20::get_battery_status(&self.transport, slot, &features)
-                            .ok()
-                            .flatten()
-                    })
-                    .or_else(|| {
-                        hidpp20::get_battery_voltage(&self.transport, slot, &features)
-                            .ok()
-                            .flatten()
-                    });
+                let battery = self.read_battery(slot, &features);
                 (name, battery, true)
             }
             _ => {
@@ -409,6 +400,24 @@ impl Receiver {
                 (None, None, linked == Some(true))
             }
         }
+    }
+
+    /// Battery from whichever of UNIFIED_BATTERY, BATTERY_STATUS and
+    /// BATTERY_VOLTAGE the device has, in that order.
+    fn read_battery(&self, slot: u8, features: &HashMap<u16, u8>) -> Option<Battery> {
+        hidpp20::get_unified_battery(&self.transport, slot, features)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                hidpp20::get_battery_status(&self.transport, slot, features)
+                    .ok()
+                    .flatten()
+            })
+            .or_else(|| {
+                hidpp20::get_battery_voltage(&self.transport, slot, features)
+                    .ok()
+                    .flatten()
+            })
     }
 
     /// Expose the transport for debug/probe tooling.
@@ -504,6 +513,7 @@ impl Receiver {
         let multiplatform =
             hidpp20::get_multiplatform(&self.transport, slot, &features).unwrap_or(None);
         let backlight = hidpp20::get_backlight(&self.transport, slot, &features).unwrap_or(None);
+        let battery = self.read_battery(slot, &features);
         Ok(AllDeviceSettings {
             dpi,
             scroll,
@@ -513,6 +523,7 @@ impl Receiver {
             multiplatform,
             backlight,
             reprog_controls_idx,
+            battery,
         })
     }
 }
