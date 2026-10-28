@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::devices::types::{Battery, BatteryStatus};
 use crate::error::Result;
-use crate::hidpp::message::{Message, SOFTWARE_ID};
+use crate::hidpp::message::{Message, ReplyBytes, SOFTWARE_ID};
 use crate::transport::Transport;
 
 // Key HID++ 2.0 feature IDs.
@@ -110,7 +110,7 @@ pub fn discover_features(
         };
         let p = reply.params();
         if p.len() >= 2 {
-            let feat_id = ((p[0] as u16) << 8) | (p[1] as u16);
+            let feat_id = ((p.at(0) as u16) << 8) | (p.at(1) as u16);
             if feat_id != 0 {
                 map.insert(feat_id, i as u8);
             }
@@ -166,7 +166,14 @@ pub fn feature_call(
             params.get(1).copied().unwrap_or(0),
             params.get(2).copied().unwrap_or(0),
         ];
-        Message::short(device, feature_index, fn_addr(function), p[0], p[1], p[2])
+        Message::short(
+            device,
+            feature_index,
+            fn_addr(function),
+            p.at(0),
+            p.at(1),
+            p.at(2),
+        )
     } else {
         Message::long(device, feature_index, fn_addr(function), params)
     };
@@ -222,7 +229,7 @@ pub fn get_device_name(
         let reply = feature_call(transport, device, idx, 1, &[offset as u8])?;
         let p = reply.params();
         let remaining = total_chars - name_bytes.len();
-        let chunk = &p[..remaining.min(p.len())];
+        let chunk = p.span(0, remaining);
         name_bytes.extend_from_slice(chunk);
         offset += chunk.len();
         if chunk.is_empty() {
@@ -231,7 +238,7 @@ pub fn get_device_name(
     }
 
     Ok(Some(
-        String::from_utf8_lossy(&name_bytes[..total_chars.min(name_bytes.len())]).into_owned(),
+        String::from_utf8_lossy(name_bytes.span(0, total_chars)).into_owned(),
     ))
 }
 
@@ -266,12 +273,12 @@ pub fn get_friendly_name(
         if p.len() < 2 {
             break;
         }
-        let chunk = &p[1..];
+        let chunk = p.span(1, p.len());
         let take = (total_chars - name_bytes.len()).min(chunk.len());
         if take == 0 {
             break;
         }
-        name_bytes.extend_from_slice(&chunk[..take]);
+        name_bytes.extend_from_slice(chunk.span(0, take));
         offset += take;
     }
 
@@ -325,8 +332,8 @@ pub fn get_unified_battery(
         return Ok(None);
     }
 
-    let level = if p[0] > 0 {
-        Some(p[0]) // SOC percentage
+    let level = if p.at(0) > 0 {
+        Some(p.at(0)) // SOC percentage
     } else {
         // No SOC reported; derive approximate level from the level nibble.
         Some(match p.get(1).copied().unwrap_or(0) {
@@ -362,7 +369,7 @@ pub fn get_battery_voltage(
     let reply = feature_call(transport, device, idx, 0, &[])?;
     let p = reply.params();
     let voltage = if p.len() >= 2 {
-        Some(((p[0] as u16) << 8) | (p[1] as u16))
+        Some(((p.at(0) as u16) << 8) | (p.at(1) as u16))
     } else {
         None
     };
@@ -405,7 +412,7 @@ pub fn get_dpi_info(
         // Skip byte 0 (sensor echo); DPI values are 2-byte big-endian words starting at byte 1.
         let mut i = 1;
         while i + 1 < p.len() {
-            let val = ((p[i] as u16) << 8) | (p[i + 1] as u16);
+            let val = ((p.at(i) as u16) << 8) | (p.at(i + 1) as u16);
             i += 2;
             if val == 0 {
                 break 'pages;
@@ -414,7 +421,7 @@ pub fn get_dpi_info(
                 // Range step marker: the next value is the end of the range.
                 let step = val & 0x1FFF;
                 if i + 1 < p.len() {
-                    let end = ((p[i] as u16) << 8) | (p[i + 1] as u16);
+                    let end = ((p.at(i) as u16) << 8) | (p.at(i + 1) as u16);
                     i += 2;
                     if end == 0 {
                         break 'pages;
@@ -448,12 +455,12 @@ pub fn get_dpi_info(
         Ok(reply) => {
             let p = reply.params();
             let current = if p.len() >= 3 {
-                ((p[1] as u16) << 8) | (p[2] as u16)
+                ((p.at(1) as u16) << 8) | (p.at(2) as u16)
             } else {
                 0
             };
             let default = if p.len() >= 5 {
-                ((p[3] as u16) << 8) | (p[4] as u16)
+                ((p.at(3) as u16) << 8) | (p.at(4) as u16)
             } else {
                 0
             };
@@ -730,12 +737,16 @@ fn read_host_name(transport: &Transport, device: u8, hi_idx: u8, slot: u8) -> Re
         let offset = name_bytes.len();
         let reply = feature_call(transport, device, hi_idx, 3, &[slot, offset as u8])?;
         let np = reply.params();
-        let chunk = if np.len() > 2 { &np[2..] } else { break };
+        let chunk = if np.len() > 2 {
+            np.span(2, np.len())
+        } else {
+            break;
+        };
         let take = (name_len - name_bytes.len()).min(chunk.len());
         if take == 0 {
             break;
         }
-        name_bytes.extend_from_slice(&chunk[..take]);
+        name_bytes.extend_from_slice(chunk.span(0, take));
     }
     Ok(String::from_utf8_lossy(&name_bytes)
         .trim_end_matches('\0')
@@ -817,7 +828,7 @@ pub fn set_host_name(
     while offset < write_len {
         let chunk_size = (write_len - offset).min(14);
         let mut params = vec![host_slot, offset as u8];
-        params.extend_from_slice(&name_bytes[offset..offset + chunk_size]);
+        params.extend_from_slice(name_bytes.span(offset, offset + chunk_size));
         feature_call(transport, device, hi_idx, 4, &params)?;
         offset += chunk_size;
     }
@@ -857,8 +868,8 @@ fn find_fn_feature(features: &HashMap<u16, u8>) -> Option<(u8, u16)> {
 /// GetFnInversionState (fn 0): [current_byte, default_byte, ...].
 /// Bit 0 of current_byte = currently swapped.
 ///
-/// K375S_FN_INVERSION (0x40A3) quirk: on devices like the MX Mechanical, p[0] is a
-/// software-settable field that firmware ignores, while p[1] holds the actual active
+/// K375S_FN_INVERSION (0x40A3) quirk: on devices like the MX Mechanical, p.at(0) is a
+/// software-settable field that firmware ignores, while p.at(1) holds the actual active
 /// state (changed by physical Fn-Lock toggle). Swap the byte order for 0x40A3.
 pub fn get_fn_settings(
     transport: &Transport,
@@ -889,7 +900,7 @@ pub fn get_fn_settings(
 /// SetFnInversionState (fn 1): params=[inverted_byte] for 0x40A0/0x40A2.
 ///
 /// K375S_FN_INVERSION (0x40A3) requires params=[host_byte, inverted_byte] where host_byte
-/// is p[0] of GetFnInversionState (the current host index echoed by the device). Without
+/// is p.at(0) of GetFnInversionState (the current host index echoed by the device). Without
 /// the host prefix the device accepts the command but silently ignores it.
 pub fn set_fn_swap(
     transport: &Transport,
@@ -913,7 +924,7 @@ pub fn set_fn_swap(
     );
     let swap_byte: u8 = if swapped { 0x01 } else { 0x00 };
     if feat_id == FEAT_K375S_FN_INVERSION {
-        // Read current state to obtain the host prefix byte (p[0] of fn 0).
+        // Read current state to obtain the host prefix byte (p.at(0) of fn 0).
         let state = feature_call(transport, device, idx, 0, &[])?;
         let host = state.params().first().copied().unwrap_or(0x00);
         eprintln!(
@@ -983,7 +994,7 @@ pub fn get_multiplatform(
         let dp = desc.params();
         let platform_index = dp.first().copied().unwrap_or(i as u8);
         let os_flags = if dp.len() >= 4 {
-            ((dp[2] as u16) << 8) | (dp[3] as u16)
+            ((dp.at(2) as u16) << 8) | (dp.at(3) as u16)
         } else {
             0
         };
@@ -1086,9 +1097,9 @@ pub fn get_backlight(
         return Ok(None);
     }
 
-    let enabled = p[0] != 0;
-    let options = p[1];
-    let supported = p[2];
+    let enabled = p.at(0) != 0;
+    let options = p.at(1);
+    let supported = p.at(2);
     // effects field at bytes 3-4; level at byte 5.
     let level = p.get(5).copied().unwrap_or(0);
     // Mode is encoded in bits 0-1 of options: 0=disabled, 1=automatic, 3=manual/always-on.
@@ -1138,7 +1149,7 @@ pub fn set_backlight(
         return Ok(());
     }
 
-    let options_raw = cp[1];
+    let options_raw = cp.at(1);
     let new_enabled: u8 = if mode == 0 { 0 } else { 1 };
     // Mode is in bits 0-1; preserve bit 2 and above (effects/timing flags).
     let new_options = (options_raw & !0x03u8) | (mode & 0x03);

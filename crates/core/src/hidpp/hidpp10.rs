@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use crate::devices::types::DeviceKind;
 use crate::error::{Error, Hidpp10Error, Result};
-use crate::hidpp::message::{Message, RECEIVER_DEVICE};
+use crate::hidpp::message::{Message, ReplyBytes, RECEIVER_DEVICE};
 use crate::transport::Transport;
 
 /// HID++ 1.0 register addresses.
@@ -155,8 +155,8 @@ pub fn get_receiver_info(transport: &Transport) -> Result<(String, u8)> {
     if p.len() < 7 {
         return Err(Error::InvalidResponse);
     }
-    let serial = bytes_to_hex(&p[1..5]);
-    let max_devices = p[6];
+    let serial = bytes_to_hex(p.span(1, 5));
+    let max_devices = p.at(6);
     Ok((serial, max_devices))
 }
 
@@ -177,9 +177,9 @@ pub fn get_pairing_info(transport: &Transport, slot: u8) -> Result<Option<Pairin
             if p.len() < 8 {
                 return Err(Error::InvalidResponse);
             }
-            let wpid = [p[3], p[4]];
-            let kind = DeviceKind::from_byte(p[7] & 0x0F);
-            let polling_rate_ms = p[2];
+            let wpid = [p.at(3), p.at(4)];
+            let kind = DeviceKind::from_byte(p.at(7) & 0x0F);
+            let polling_rate_ms = p.at(2);
             Ok(Some(PairingInfo {
                 wpid,
                 kind,
@@ -204,7 +204,7 @@ pub fn get_extended_pairing_info(transport: &Transport, slot: u8) -> Result<Opti
             if p.len() < 5 {
                 return Err(Error::InvalidResponse);
             }
-            Ok(Some([p[1], p[2], p[3], p[4]]))
+            Ok(Some([p.at(1), p.at(2), p.at(3), p.at(4)]))
         }
     }
 }
@@ -225,9 +225,9 @@ pub fn get_device_codename(transport: &Transport, slot: u8) -> Result<Option<Str
             if p.len() < 2 {
                 return Ok(None);
             }
-            let name_len = p[1] as usize;
+            let name_len = p.at(1) as usize;
             let end = (2 + name_len).min(p.len());
-            let name = String::from_utf8_lossy(&p[2..end]).into_owned();
+            let name = String::from_utf8_lossy(p.span(2, end)).into_owned();
             Ok(Some(name))
         }
     }
@@ -279,9 +279,9 @@ pub fn get_bolt_pairing_info(transport: &Transport, slot: u8) -> Result<Option<B
                 return Ok(None);
             }
             // Bolt stores WPID bytes reversed relative to Unifying: high at [3], low at [2].
-            let wpid = [p[3], p[2]];
-            let kind = DeviceKind::from_byte(p[1] & 0x0F);
-            let serial = [p[4], p[5], p[6], p[7]];
+            let wpid = [p.at(3), p.at(2)];
+            let kind = DeviceKind::from_byte(p.at(1) & 0x0F);
+            let serial = [p.at(4), p.at(5), p.at(6), p.at(7)];
             Ok(Some(BoltPairingInfo { wpid, kind, serial }))
         }
     }
@@ -310,9 +310,9 @@ pub fn get_bolt_device_codename(transport: &Transport, slot: u8) -> Result<Optio
             if p.len() < 3 {
                 return Ok(None);
             }
-            let name_len = (p[2] as usize).min(14);
+            let name_len = (p.at(2) as usize).min(14);
             let end = (3 + name_len).min(p.len());
-            let name = String::from_utf8_lossy(&p[3..end]).into_owned();
+            let name = String::from_utf8_lossy(p.span(3, end)).into_owned();
             Ok(Some(name))
         }
     }

@@ -11,6 +11,7 @@ use crate::devices::types::{Battery, DeviceInfo};
 use crate::error::Result;
 use crate::hidpp::hidpp10::{self, bytes_to_hex};
 use crate::hidpp::hidpp20;
+use crate::hidpp::message::ReplyBytes;
 use crate::transport::Transport;
 
 const LOGITECH_VID: u16 = 0x046D;
@@ -685,22 +686,24 @@ impl Receiver {
                 }
                 NOTIF_DEVICE_DISCOVERY => {
                     // Two chunks arrive for each discovered device.
-                    // Chunk type is at params[1]: 0 = address/auth/kind, 1 = name.
+                    // Chunk type is at params.at(1): 0 = address/auth/kind, 1 = name.
                     let chunk = params.get(1).copied().unwrap_or(0xFF);
                     if chunk == 0 && params.len() >= 15 {
                         let mut addr = [0u8; 6];
-                        addr.copy_from_slice(&params[6..12]);
+                        for (dst, src) in addr.iter_mut().zip(params.span(6, 12)) {
+                            *dst = *src;
+                        }
                         session.bolt_discovered = Some(BoltDiscoveredDevice {
                             address: addr,
-                            authentication: params[14],
-                            kind: params[3],
+                            authentication: params.at(14),
+                            kind: params.at(3),
                             name: String::new(),
                         });
                     } else if chunk == 1 {
                         if let Some(dev) = &mut session.bolt_discovered {
                             let name_len = params.get(2).copied().unwrap_or(0) as usize;
                             let end = (3 + name_len).min(params.len());
-                            dev.name = String::from_utf8_lossy(&params[3..end]).into_owned();
+                            dev.name = String::from_utf8_lossy(params.span(3, end)).into_owned();
                         }
                         // Kick off pairing once we have both chunks.
                         if let Some(dev) = &session.bolt_discovered {
@@ -740,7 +743,7 @@ impl Receiver {
                     // params[0..6] = passkey as an ASCII decimal string (e.g. "048" or "512").
                     // Keyboards (auth bit 0 set) display it directly; other devices interpret
                     // the integer as a 10-bit L/R button sequence.
-                    let raw = &params[..6.min(params.len())];
+                    let raw = params.span(0, 6);
                     let passkey = String::from_utf8_lossy(raw)
                         .trim_end_matches('\0')
                         .to_owned();
@@ -758,7 +761,7 @@ impl Receiver {
                 }
                 NOTIF_PAIRING_STATUS => {
                     // address: 0x00=lock open (still pairing), 0x02=paired, other=lock closed.
-                    // data[0] (params[0]): 0=no error, 1=timeout, 2=failed.
+                    // data[0] (params.at(0)): 0=no error, 1=timeout, 2=failed.
                     // On success: address=0x02, data[0]=0x00, slot at data[7].
                     let pair_error = params.first().copied().unwrap_or(0);
                     if pair_error != 0 {
@@ -863,7 +866,7 @@ impl Receiver {
     /// intentionally ignored here; they must not be treated as connection-state changes.
     ///
     /// Protocol reference (matches Solaar's _process_hidpp10_notification):
-    ///   0x41 (DJ_PAIRING): params[0] & 0x40 == 0 => link established (online)
+    ///   0x41 (DJ_PAIRING): params.at(0) & 0x40 == 0 => link established (online)
     ///   0x4B (POWER):      address == 0x01        => device powered on (online)
     pub fn poll_device_event(&self, timeout_ms: i32) -> Result<Option<DeviceEvent>> {
         let msg = match self.transport.read_one(timeout_ms)? {
@@ -895,7 +898,7 @@ impl Receiver {
         match sub_id {
             NOTIF_DJ_PAIRING => {
                 // address 0x00 = unknown/legacy protocol; skip.
-                // For all other protocols: params[0] bit 6 inverted = link_established.
+                // For all other protocols: params.at(0) bit 6 inverted = link_established.
                 if msg.address() == 0x00 {
                     return Ok(None);
                 }
@@ -954,4 +957,17 @@ fn passkey_to_buttons(passkey_str: &str) -> String {
         .rev()
         .map(|i| if (n >> i) & 1 != 0 { 'R' } else { 'L' })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn button_passkey_reads_ten_bits_msb_first_with_one_as_right() {
+        assert_eq!(passkey_to_buttons("512"), "RLLLLLLLLL");
+        assert_eq!(passkey_to_buttons("001"), "LLLLLLLLLR");
+        assert_eq!(passkey_to_buttons("1023\0"), "RRRRRRRRRR");
+        assert_eq!(passkey_to_buttons("garbage"), "LLLLLLLLLL");
+    }
 }

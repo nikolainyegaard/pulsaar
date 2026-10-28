@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use hidapi::{HidApi, HidDevice};
 
 use crate::error::{Error, Hidpp10Error, Hidpp20Error, Result};
-use crate::hidpp::message::{Message, MAX_READ_SIZE, RECEIVER_DEVICE};
+use crate::hidpp::message::{Message, ReplyBytes, MAX_READ_SIZE, RECEIVER_DEVICE};
 
 // Receiver responds quickly (short USB round-trip). 300ms is generous for USB.
 const RECEIVER_TIMEOUT: Duration = Duration::from_millis(300);
@@ -54,7 +54,7 @@ impl Transport {
         if n == 0 {
             return Ok(None);
         }
-        Ok(Message::from_bytes(&buf[..n]))
+        Ok(Message::from_bytes(buf.span(0, n)))
     }
 
     pub fn write(&self, msg: &Message) -> Result<()> {

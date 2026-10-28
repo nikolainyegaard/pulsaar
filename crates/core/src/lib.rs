@@ -1,9 +1,3 @@
-// ponytail: reply parsing indexes into `params()` without length checks (60
-// sites). A short or malformed reply panics the HID worker thread; the release
-// profile unwinds and the worker restarts itself (crates/ui/src/store.rs).
-// Replace with `get()` and drop this allow when the parser is hardened.
-#![allow(clippy::indexing_slicing)]
-
 pub mod devices;
 pub mod direct;
 pub mod error;

@@ -32,7 +32,5 @@ indexing_slicing = "deny"
 opt-level = 3
 lto = "fat"
 codegen-units = 1
-# unwind, not abort: a panic in the HID worker (see the ponytail note in
-# crates/core/src/lib.rs) must not take the window down.
-panic = "unwind"
+panic = "abort"
 strip = true

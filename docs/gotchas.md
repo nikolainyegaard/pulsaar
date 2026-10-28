@@ -24,9 +24,9 @@ Feature discovery costs 0.6 to 1.4 s per device (one request per feature). `Rece
 
 With the kernel's hid-logitech-dj driver bound (not the case on the author's Fedora laptop, where the receivers use hid-generic), receivers run in DJ mode and send 15-byte reports with ID 0x20. Type 0x42 is the connection status (bit 0 of the first byte set means link lost); types below 0x10 are forwarded input. The core parses them so link changes arrive either way, and `Transport::request` and pairing skip them.
 
-## The release profile unwinds
+## Reply parsing never panics
 
-OxTree aborts on panic; Pulsaar unwinds. The reply parsers index into `params()` without length checks, and the FFI used to hide that behind `catch_unwind`. Until the parsers use `get()`, a malformed reply must only kill the HID worker, not the window: `Store::start` catches the panic, shows a toast and starts the worker again, up to three times.
+Reply bytes are read through `ReplyBytes::at` and `span` (crates/core/src/hidpp/message.rs): a missing byte reads as 0 and a missing range as the part that is there, so a short or malformed reply gives wrong-looking values instead of a panic. Until 2026-10-28 the parsers indexed directly in 60 places, the release profile unwound and the worker restarted itself; with `indexing_slicing` denied in the core again, the profile is back to `panic = "abort"` like OxTree.
 
 ## Not a Solaar fork
 
