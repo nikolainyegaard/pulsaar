@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Pulsaar
+Comment=Pair, unpair and configure Logitech Unifying and Bolt devices
+Exec=pulsaar
+Icon=com.github.nikolainyegaard.pulsaar
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=logitech;unifying;bolt;mouse;keyboard;battery;solaar;
+StartupWMClass=com.github.nikolainyegaard.pulsaar

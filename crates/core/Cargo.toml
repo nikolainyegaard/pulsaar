@@ -1,0 +1,17 @@
+[package]
+name = "pulsaar-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lib]
+name = "pulsaar_core"
+
+[dependencies]
+# Pure-Rust Linux backend: no libudev to link, so the glibc 2.28 cross
+# build in release.yml needs no target system libraries.
+hidapi = { version = "2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
+
+[lints]
+workspace = true

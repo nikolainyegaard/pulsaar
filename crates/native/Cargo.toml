@@ -1,0 +1,9 @@
+[package]
+name = "pulsaar-native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true

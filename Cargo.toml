@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = ["crates/core", "crates/native", "crates/ui", "apps/pulsaar"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+repository = "https://github.com/nikolainyegaard/pulsaar"
+
+[workspace.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "system_fonts", "clipboard"] }
+epaint_default_fonts = "0.37.0"
+pulsaar-core = { path = "crates/core" }
+pulsaar-native = { path = "crates/native" }
+pulsaar-ui = { path = "crates/ui" }
+
+[workspace.lints.rust]
+# deny, not forbid: `core::init` makes one hidapi call on macOS.
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+unreachable = "deny"
+indexing_slicing = "deny"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+# unwind, not abort: a panic in the HID worker (see the ponytail note in
+# crates/core/src/lib.rs) must not take the window down.
+panic = "unwind"
+strip = true

@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.github.nikolainyegaard.pulsaar</id>
+  <name>Pulsaar</name>
+  <summary>Manage Logitech Unifying and Bolt receivers</summary>
+  <developer id="com.github.nikolainyegaard">
+    <name>Nikolai Nyegaard</name>
+  </developer>
+  <metadata_license>CC0-1.0</metadata_license>
+  <description>
+    <p>
+      Pulsaar pairs and unpairs devices on Logitech Unifying and Bolt
+      receivers, shows battery and device information, and changes device
+      settings such as DPI, scrolling, function keys and backlight. No
+      account, no telemetry.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.github.nikolainyegaard.pulsaar.desktop</launchable>
+  <provides>
+    <binary>pulsaar</binary>
+  </provides>
+  <url type="homepage">https://github.com/nikolainyegaard/pulsaar</url>
+  <url type="bugtracker">https://github.com/nikolainyegaard/pulsaar/issues</url>
+  <url type="vcs-browser">https://github.com/nikolainyegaard/pulsaar</url>
+  <content_rating type="oars-1.1"/>
+  <categories>
+    <category>Settings</category>
+    <category>HardwareSettings</category>
+  </categories>
+</component>

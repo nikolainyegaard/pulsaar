@@ -1,0 +1,50 @@
+[package]
+name = "pulsaar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Pair, unpair and configure Logitech Unifying and Bolt devices"
+authors = ["Nikolai Nyegaard"]
+
+[dependencies]
+eframe.workspace = true
+epaint_default_fonts.workspace = true
+pulsaar-core.workspace = true
+pulsaar-native.workspace = true
+pulsaar-ui.workspace = true
+
+[lints]
+workspace = true
+
+# cargo deb and cargo generate-rpm: the binary, the desktop entry, the icon,
+# the AppStream metainfo and the udev rule that opens hidraw to the user.
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+depends = "libc6 (>= 2.28)"
+extended-description = """Pulsaar pairs and unpairs devices on Logitech Unifying and Bolt \
+receivers, shows battery and device information, and changes device settings \
+such as DPI, scrolling, function keys and backlight."""
+assets = [
+    ["target/release/pulsaar", "usr/bin/", "755"],
+    ["../../packaging/com.github.nikolainyegaard.pulsaar.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/com.github.nikolainyegaard.pulsaar.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["../../packaging/com.github.nikolainyegaard.pulsaar.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["../../packaging/42-pulsaar.rules", "lib/udev/rules.d/", "644"],
+    ["../../README.md", "usr/share/doc/pulsaar/", "644"],
+]
+
+[package.metadata.generate-rpm]
+auto-req = "disabled"
+assets = [
+    { source = "target/release/pulsaar", dest = "/usr/bin/pulsaar", mode = "755" },
+    { source = "../../packaging/com.github.nikolainyegaard.pulsaar.desktop", dest = "/usr/share/applications/com.github.nikolainyegaard.pulsaar.desktop", mode = "644" },
+    { source = "../../packaging/com.github.nikolainyegaard.pulsaar.svg", dest = "/usr/share/icons/hicolor/scalable/apps/com.github.nikolainyegaard.pulsaar.svg", mode = "644" },
+    { source = "../../packaging/com.github.nikolainyegaard.pulsaar.metainfo.xml", dest = "/usr/share/metainfo/com.github.nikolainyegaard.pulsaar.metainfo.xml", mode = "644" },
+    { source = "../../packaging/42-pulsaar.rules", dest = "/usr/lib/udev/rules.d/42-pulsaar.rules", mode = "644" },
+    { source = "../../README.md", dest = "/usr/share/doc/pulsaar/README.md", mode = "644", doc = true },
+]
+
+[package.metadata.generate-rpm.requires]
+glibc = ">= 2.28"

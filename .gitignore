@@ -1,0 +1,25 @@
+# Rust
+target/
+
+# macOS
+macos/Pulsaar.xcodeproj/project.xcworkspace/xcuserdata/
+macos/Pulsaar.xcodeproj/xcuserdata/
+macos/build/
+*.dSYM
+
+# Windows
+windows/.vs/
+windows/*/bin/
+windows/*/obj/
+windows/*.user
+*.suo
+
+
+# General
+.DS_Store
+._*
+*.log
+/.idea/
+
+# Claude
+CLAUDE.md

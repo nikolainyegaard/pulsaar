@@ -1,0 +1,10 @@
+Software OpenGL for Pulsaar on Windows
+
+Put opengl32.dll and libgallium_wgl.dll in the same folder as pulsaar.exe.
+They are Mesa's llvmpipe renderer, built by the mesa-dist-win project
+(https://github.com/pal1000/mesa-dist-win), and draw the window on the
+CPU. Use them only on a machine without a GPU, such as a virtual desktop,
+where Pulsaar otherwise reports that OpenGL 2.0 is missing. On a machine
+with a GPU they replace the driver's OpenGL and make drawing slower.
+
+Mesa is licensed under the MIT licence, see MESA-LICENSE.

@@ -1,0 +1,160 @@
+name: release
+
+# On a version tag: build Linux for x86_64 and aarch64 against glibc 2.28,
+# so the binaries run on RHEL 8, Debian 10, Ubuntu 18.10 and anything
+# newer; pack each as a tarball, a .deb, an .rpm and an AppImage. Build a
+# universal macOS app bundle and a Windows zip. Attach them all to a GitHub
+# release with the changelog section as its notes.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  GLIBC: "2.28"
+  APP_ID: com.github.nikolainyegaard.pulsaar
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - target: aarch64-unknown-linux-gnu
+            arch: aarch64
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Install the packaging tools
+        run: |
+          pip install cargo-zigbuild
+          cargo install cargo-deb cargo-generate-rpm --locked
+          curl -fsSLo appimagetool https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+      - name: Build
+        run: cargo zigbuild --release --target ${{ matrix.target }}.${{ env.GLIBC }}
+      - name: Version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Tarball
+        run: |
+          mkdir -p dist stage/pulsaar-${VERSION}-${{ matrix.arch }}
+          cp target/${{ matrix.target }}/release/pulsaar README.md CHANGELOG.md stage/pulsaar-${VERSION}-${{ matrix.arch }}/
+          cp -r packaging stage/pulsaar-${VERSION}-${{ matrix.arch }}/
+          tar -C stage -czf dist/pulsaar-${VERSION}-${{ matrix.arch }}.tar.gz pulsaar-${VERSION}-${{ matrix.arch }}
+      - name: Debian package
+        run: cargo deb -p pulsaar --no-build --no-strip --target ${{ matrix.target }} -o dist/
+      - name: RPM package
+        run: cargo generate-rpm -p apps/pulsaar --target ${{ matrix.target }} -o dist/
+      - name: AppImage
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/scalable/apps AppDir/usr/share/metainfo
+          cp target/${{ matrix.target }}/release/pulsaar AppDir/usr/bin/
+          cp packaging/${APP_ID}.desktop AppDir/usr/share/applications/
+          cp packaging/${APP_ID}.svg AppDir/usr/share/icons/hicolor/scalable/apps/
+          cp packaging/${APP_ID}.metainfo.xml AppDir/usr/share/metainfo/
+          ln -s usr/share/applications/${APP_ID}.desktop AppDir/${APP_ID}.desktop
+          ln -s usr/share/icons/hicolor/scalable/apps/${APP_ID}.svg AppDir/${APP_ID}.svg
+          ln -s usr/bin/pulsaar AppDir/AppRun
+          ARCH=${{ matrix.arch }} ./appimagetool --appimage-extract-and-run AppDir dist/Pulsaar-${VERSION}-${{ matrix.arch }}.AppImage
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-${{ matrix.arch }}
+          path: dist/*
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build both architectures
+        # Intel Macs run back to 10.12, Rust's own floor for the target;
+        # Apple silicon starts at 11.0. The plist's LSMinimumSystemVersion
+        # carries the lower one.
+        run: |
+          MACOSX_DEPLOYMENT_TARGET=11.0 cargo build --release --target aarch64-apple-darwin
+          MACOSX_DEPLOYMENT_TARGET=10.12 cargo build --release --target x86_64-apple-darwin
+      - name: Version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+      - name: Bundle
+        run: |
+          APP=Pulsaar.app
+          mkdir -p dist "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          lipo -create -output "$APP/Contents/MacOS/pulsaar" target/aarch64-apple-darwin/release/pulsaar target/x86_64-apple-darwin/release/pulsaar
+          sed "s/0\.0\.0/${VERSION}/g" packaging/Info.plist > "$APP/Contents/Info.plist"
+          cp packaging/pulsaar.icns "$APP/Contents/Resources/pulsaar.icns"
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --keepParent "$APP" "dist/Pulsaar-${VERSION}-macos.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-macos
+          path: dist/*
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release
+      - name: Zip
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          New-Item -ItemType Directory dist, stage | Out-Null
+          Copy-Item target/release/pulsaar.exe, README.md, CHANGELOG.md stage/
+          Compress-Archive -Path stage/* -DestinationPath "dist/Pulsaar-$version-windows-x86_64.zip"
+      - name: Software OpenGL zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MESA: 26.2.4
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart("v")
+          gh release download $env:MESA -R pal1000/mesa-dist-win -p "mesa3d-$env:MESA-release-msvc.7z" -O mesa.7z
+          7z e mesa.7z x64/opengl32.dll x64/libgallium_wgl.dll -ogl | Out-Null
+          Copy-Item packaging/software-opengl.txt gl/README.txt
+          Copy-Item packaging/MESA-LICENSE gl/
+          Compress-Archive -Path gl/* -DestinationPath "dist/Pulsaar-$version-windows-software-opengl.zip"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist-windows
+          path: dist/*
+
+  release:
+    needs: [build, macos, windows]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum * > SHA256SUMS
+      - name: Release notes from the changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          printf '\nLinux binaries are built against glibc %s. The aarch64 builds are untested; please report what you find. The .deb and .rpm install a udev rule that lets you open the receiver without root; with the tarball or the AppImage, copy packaging/42-pulsaar.rules to /etc/udev/rules.d/ once.\n' "$GLIBC" >> notes.md
+          printf '\nThe macOS app is a universal binary, signed ad hoc only: on first launch, remove the quarantine mark with `xattr -d com.apple.quarantine Pulsaar.app` or allow it under System Settings, Privacy & Security. The Windows build is unsigned, so SmartScreen will ask once. On a machine without a GPU, such as a virtual desktop, the window needs the software OpenGL zip unpacked next to the executable.\n' >> notes.md
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --notes-file notes.md

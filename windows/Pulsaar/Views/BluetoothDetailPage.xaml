@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Page
+    x:Class="Pulsaar.Views.BluetoothDetailPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8">
+            <TextBlock Text="Bluetooth"
+                       Style="{StaticResource TitleTextBlockStyle}"
+                       HorizontalAlignment="Center"/>
+            <TextBlock x:Name="SubtitleText"
+                       Style="{StaticResource BodyTextBlockStyle}"
+                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                       HorizontalAlignment="Center"/>
+            <HyperlinkButton Content="Open Bluetooth Settings"
+                             NavigateUri="ms-settings:bluetooth"
+                             HorizontalAlignment="Center"
+                             Margin="0,8,0,0"/>
+        </StackPanel>
+    </Grid>
+</Page>

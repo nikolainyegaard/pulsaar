@@ -1,0 +1,7 @@
+# Lets the logged-in user open Logitech HID++ devices: receivers over USB
+# and devices paired over Bluetooth. Without it /dev/hidraw* is root-only.
+ACTION=="remove", GOTO="pulsaar_end"
+SUBSYSTEM!="hidraw", GOTO="pulsaar_end"
+ATTRS{idVendor}=="046d", TAG+="uaccess", GOTO="pulsaar_end"
+KERNELS=="0005:046D:*", TAG+="uaccess"
+LABEL="pulsaar_end"
