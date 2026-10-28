@@ -123,12 +123,36 @@ impl Store {
         let shared = Arc::clone(&model);
         let spawned = std::thread::Builder::new()
             .name("hid".into())
-            .spawn(move || match pulsaar_core::init() {
-                Ok(api) => Worker::new(api, shared, ctx).run(&rx),
-                Err(e) => {
-                    lock(&shared).error = Some(format!("HID is unavailable: {e}"));
-                    ctx.request_repaint();
+            .spawn(move || {
+                // A malformed reply can panic the parser (see crates/core/src/lib.rs).
+                // Start over a few times rather than leave a window that never updates.
+                for _ in 0..3 {
+                    let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        match pulsaar_core::init() {
+                            Ok(api) => Worker::new(api, Arc::clone(&shared), ctx.clone()).run(&rx),
+                            Err(e) => {
+                                lock(&shared).error = Some(format!("HID is unavailable: {e}"));
+                            }
+                        }
+                    }));
+                    let Err(panic) = run else {
+                        break;
+                    };
+                    let what = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| (*s).to_owned())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_default();
+                    let mut m = lock(&shared);
+                    // A toast, since the restart's reload clears `error`.
+                    let text = format!(
+                        "A device sent a reply Pulsaar could not read ({what}). Scanning again."
+                    );
+                    m.toast = Some((text, Instant::now() + Duration::from_secs(8)));
+                    m.loading = false;
+                    m.pairing = None;
                 }
+                ctx.request_repaint();
             });
         if let Err(e) = spawned {
             lock(&model).error = Some(format!("Could not start the HID thread: {e}"));

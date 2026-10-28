@@ -16,7 +16,7 @@ The SwiftUI app opened a receiver for each read and stopped its event listeners 
 
 ## The release profile unwinds
 
-OxTree aborts on panic; Pulsaar unwinds. The reply parsers index into `params()` without length checks, and the FFI used to hide that behind `catch_unwind`. Until the parsers use `get()`, a malformed reply must only kill the HID worker, not the window.
+OxTree aborts on panic; Pulsaar unwinds. The reply parsers index into `params()` without length checks, and the FFI used to hide that behind `catch_unwind`. Until the parsers use `get()`, a malformed reply must only kill the HID worker, not the window: `Store::start` catches the panic, shows a toast and starts the worker again, up to three times.
 
 ## Not a Solaar fork
 
