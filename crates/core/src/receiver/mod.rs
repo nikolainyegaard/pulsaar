@@ -586,7 +586,8 @@ pub struct PairingSession {
 /// From Bolt's 0x4E notification, which Solaar ignores. The address byte is
 /// the Bluetooth LE SMP keypress type: 0 started, 1 entered, 2 erased,
 /// 3 cleared, 4 completed; the params carry the device's address. Confirmed
-/// 2026-10-28 pairing an MX Anywhere 3S: 00, ten times 01, then 04.
+/// 2026-10-28 pairing an MX Anywhere 3S (00, ten times 01, then 04) and a
+/// keyboard with a 6-digit code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyEntry {
     Started,
