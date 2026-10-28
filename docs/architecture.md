@@ -38,7 +38,7 @@ pulsaar/
 │   │       └── bin/             list_devices.rs, probe_settings.rs (debug tools)
 │   ├── native/                  platform glue without UI: config directory, host name, Bluetooth settings (pulsaar-native)
 │   └── ui/                      egui views and application state (pulsaar-ui)
-│       └── src/                 lib.rs (app, sidebar, toast), detail.rs (panes, settings), dialogs.rs, store.rs (HID worker)
+│       └── src/                 lib.rs (app, menu, sidebar, toast), detail.rs (panes, settings, DPI slider), dialogs.rs, icons.rs, store.rs (HID worker); assets/ holds the Bolt, Unifying and Bluetooth marks as 64 px RGBA
 ├── apps/pulsaar/                the binary: window, fonts, icon; deb and rpm metadata
 ├── packaging/                   desktop entry, icons, AppStream metainfo, udev rule, Info.plist
 ├── macos/, windows/             previous native apps, kept as the spec until parity

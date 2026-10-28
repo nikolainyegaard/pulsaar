@@ -6,9 +6,7 @@ Keep this file current: after every change, remove finished items and adjust the
 
 egui rewrite (branch `egui-rewrite`):
 
-- Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the macOS UI ported (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). Not yet tested by the user with an online device, pairing or unpairing
-- DPI slider: tick labels and the log^1.5 curve of the macOS slider (egui's plain log scale for now)
-- Receiver and device-kind icons (the macOS app used SF Symbols and three SVGs)
+- Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the macOS UI ported (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). settings writes, pairing (mouse and keyboard, with live passkey progress) and unpairing tested by the user on Fedora
 - Pick a license; cargo-deb and cargo-generate-rpm need the `license` field before the first tag
 - Core tests cover message parsing and the button passkey; the per-feature parsers need a fake transport before they can be tested
 - Delete `macos/` and `windows/` at parity

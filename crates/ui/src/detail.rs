@@ -5,6 +5,7 @@ use eframe::egui::{self, Color32, RichText};
 use pulsaar_core::receiver::AllDeviceSettings;
 use pulsaar_core::{Battery, DeviceKind};
 
+use crate::icons;
 use crate::store::{Command, DeviceKey, Write};
 use crate::{
     battery_color, connection_label, kind_label, level_text, status_label, PulsaarApp, Selection,
@@ -28,7 +29,7 @@ pub fn device(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey) {
         .map(|b| (b, m.cached_battery.contains(&key)));
     drop(m);
 
-    header(ui, &d.name, kind_label(d.kind), Some(d.online), battery);
+    header(ui, &d.name, d.kind, Some(d.online), battery);
     ui.separator();
     if !d.online {
         ui.weak(
@@ -76,7 +77,8 @@ pub fn receiver(app: &mut PulsaarApp, ui: &mut egui::Ui, index: usize) {
         return;
     };
     ui.add_space(8.0);
-    ui.heading(r.name);
+    let icon = app.icons.receiver(r.kind).cloned();
+    titled(ui, icon.as_ref(), r.name);
     ui.weak(format!(
         "{} of {} devices paired",
         r.devices.len(),
@@ -132,7 +134,7 @@ pub fn receiver(app: &mut PulsaarApp, ui: &mut egui::Ui, index: usize) {
 pub fn bluetooth(app: &mut PulsaarApp, ui: &mut egui::Ui) {
     let direct = app.model().direct.clone();
     ui.add_space(8.0);
-    ui.heading(&app.host_name);
+    titled(ui, Some(app.icons.bluetooth()), &app.host_name);
     let n = direct.len();
     ui.weak(format!(
         "{n} device{} paired via Bluetooth",
@@ -158,7 +160,7 @@ pub fn direct(app: &mut PulsaarApp, ui: &mut egui::Ui, index: usize) {
     header(
         ui,
         &d.name,
-        kind_label(d.kind),
+        d.kind,
         None,
         d.battery.as_ref().map(|b| (b, false)),
     );
@@ -186,16 +188,24 @@ pub fn direct(app: &mut PulsaarApp, ui: &mut egui::Ui, index: usize) {
 fn header(
     ui: &mut egui::Ui,
     name: &str,
-    kind: &str,
+    kind: DeviceKind,
     online: Option<bool>,
     battery: Option<(&Battery, bool)>,
 ) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
+        let (rect, _) =
+            ui.allocate_exact_size(egui::Vec2::splat(HEADER_ICON), egui::Sense::hover());
+        let color = if online == Some(false) {
+            ui.visuals().weak_text_color()
+        } else {
+            ui.visuals().text_color()
+        };
+        icons::paint_device(ui.painter(), rect, kind, color);
         ui.vertical(|ui| {
             ui.heading(name);
             ui.horizontal(|ui| {
-                ui.weak(kind);
+                ui.weak(kind_label(kind));
                 if let Some(online) = online {
                     let (color, text) = if online {
                         (Color32::from_rgb(0x2e, 0xa0, 0x43), "Online")
@@ -222,6 +232,18 @@ fn header(
                 });
             });
         }
+    });
+}
+
+const HEADER_ICON: f32 = 40.0;
+
+/// A heading with the receiver's or Bluetooth mark before it.
+fn titled(ui: &mut egui::Ui, icon: Option<&egui::TextureHandle>, title: &str) {
+    ui.horizontal(|ui| {
+        if let Some(tex) = icon {
+            ui.add(icons::image(ui, tex, HEADER_ICON));
+        }
+        ui.heading(title);
     });
 }
 
@@ -287,29 +309,10 @@ fn settings_form(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey, s: &Al
 
     if let Some(dpi) = s.dpi.as_ref().filter(|d| !d.dpi_list.is_empty()) {
         section(ui, "Sensitivity", |ui| {
-            let lo = f64::from(dpi.dpi_list.first().copied().unwrap_or(200));
-            let hi = f64::from(dpi.dpi_list.last().copied().unwrap_or(8000));
-            let snaps = snap_list(&dpi.dpi_list);
-            let mut value = app.dpi_drag.unwrap_or(f64::from(dpi.current_dpi));
-            let shown = nearest(&snaps, value).unwrap_or(dpi.current_dpi);
             ui.label("DPI");
-            ui.horizontal(|ui| {
-                let resp = ui.add(
-                    egui::Slider::new(&mut value, lo..=hi)
-                        .logarithmic(true)
-                        .show_value(false),
-                );
-                ui.label(RichText::new(shown.to_string()).strong());
-                if resp.changed() {
-                    app.dpi_drag = Some(value);
-                }
-                if resp.drag_stopped() || (resp.changed() && !resp.dragged()) {
-                    app.dpi_drag = None;
-                    if let Some(v) = nearest(&snaps, value) {
-                        store.write(key, Write::Dpi(v));
-                    }
-                }
-            });
+            if let Some(v) = dpi_slider(ui, &dpi.dpi_list, dpi.current_dpi, &mut app.dpi_drag) {
+                store.write(key, Write::Dpi(v));
+            }
             ui.end_row();
         });
     }
@@ -526,6 +529,108 @@ fn level_slider(
             *drag = None;
             out = Some(snap(value));
         }
+    });
+    out
+}
+
+/// The macOS app's DPI slider: position is log(DPI)^1.5 so low values get
+/// room, the readout snaps to `snap_list` while dragging, ticks and labels
+/// mark 200, 600, 1000, 2000, 4000 and 8000 plus the sensor's range.
+/// `drag` holds the 0 to 1 position while the pointer is down. Returns the
+/// DPI to write, once, on release.
+fn dpi_slider(
+    ui: &mut egui::Ui,
+    list: &[u16],
+    current: u16,
+    drag: &mut Option<f64>,
+) -> Option<u16> {
+    let (Some(&lo), Some(&hi)) = (list.first(), list.last()) else {
+        return None;
+    };
+    let (llo, lhi) = (f64::from(lo).ln(), f64::from(hi).ln());
+    let span = (lhi - llo).max(f64::EPSILON);
+    let frac = |dpi: u16| {
+        ((f64::from(dpi).ln() - llo) / span)
+            .clamp(0.0, 1.0)
+            .powf(1.5)
+    };
+    let snaps = snap_list(list);
+    let dpi_at = |t: f64| {
+        nearest(
+            &snaps,
+            (llo + t.clamp(0.0, 1.0).powf(1.0 / 1.5) * span).exp(),
+        )
+    };
+    let shown = drag.and_then(dpi_at).unwrap_or(current);
+
+    let mut out = None;
+    ui.vertical(|ui| {
+        ui.label(RichText::new(format!("{shown} DPI")).size(20.0).strong());
+        let size = egui::vec2(ui.available_width().max(200.0), 40.0);
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let track = egui::Rect::from_min_max(
+            egui::pos2(rect.left() + 10.0, rect.top() + 8.0),
+            egui::pos2(rect.right() - 10.0, rect.top() + 12.0),
+        );
+        if let Some(pos) = resp.interact_pointer_pos() {
+            if resp.is_pointer_button_down_on() {
+                *drag = Some(f64::from((pos.x - track.left()) / track.width()).clamp(0.0, 1.0));
+            }
+        }
+        if resp.drag_stopped() || resp.clicked() {
+            out = drag.take().and_then(dpi_at);
+        }
+        let x_at = |t: f64| track.left() + track.width() * t as f32;
+        let t = drag.unwrap_or_else(|| frac(current));
+        let v = ui.visuals();
+        let p = ui.painter();
+        p.rect_filled(track, 2.0, v.widgets.inactive.bg_fill);
+        let mut filled = track;
+        filled.set_right(x_at(t));
+        p.rect_filled(filled, 2.0, v.selection.bg_fill);
+        let landmarks: Vec<u16> = std::iter::once(lo)
+            .chain(
+                [200, 600, 1000, 2000, 4000, 8000]
+                    .into_iter()
+                    .filter(|d| *d > lo && *d < hi),
+            )
+            .chain(std::iter::once(hi))
+            .collect();
+        let last = landmarks.len().saturating_sub(1);
+        for (i, d) in landmarks.iter().enumerate() {
+            let x = x_at(frac(*d));
+            p.line_segment(
+                [
+                    egui::pos2(x, track.bottom() + 4.0),
+                    egui::pos2(x, track.bottom() + 9.0),
+                ],
+                egui::Stroke::new(1.5, v.weak_text_color()),
+            );
+            let align = match i {
+                0 => egui::Align2::LEFT_TOP,
+                i if i == last => egui::Align2::RIGHT_TOP,
+                _ => egui::Align2::CENTER_TOP,
+            };
+            p.text(
+                egui::pos2(x, track.bottom() + 12.0),
+                align,
+                d.to_string(),
+                egui::FontId::proportional(11.0),
+                v.weak_text_color(),
+            );
+        }
+        let thumb = egui::pos2(x_at(t), track.center().y);
+        p.circle_filled(
+            thumb,
+            9.0,
+            v.widgets.inactive.fg_stroke.color.gamma_multiply(0.15),
+        );
+        p.circle(
+            thumb,
+            8.0,
+            Color32::WHITE,
+            egui::Stroke::new(1.0, v.widgets.inactive.bg_stroke.color),
+        );
     });
     out
 }

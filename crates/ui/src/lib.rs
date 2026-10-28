@@ -2,6 +2,7 @@
 
 mod detail;
 mod dialogs;
+mod icons;
 pub mod store;
 
 use std::time::{Duration, Instant};
@@ -9,7 +10,13 @@ use std::time::{Duration, Instant};
 use eframe::egui::{self, Color32, IntoAtoms, Key, KeyboardShortcut, Modifiers, RichText};
 use pulsaar_core::{Battery, BatteryStatus, DeviceKind, ReceiverKind};
 
+use icons::Icons;
 use store::{Command, DeviceKey, Model, Store};
+
+/// The window's size at first start and after Window, Return to Default Size.
+pub const DEFAULT_SIZE: [f32; 2] = [760.0, 520.0];
+
+const REFRESH: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::R);
 
 /// What the detail pane shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -23,6 +30,7 @@ pub enum Selection {
 
 pub struct PulsaarApp {
     store: Store,
+    icons: Icons,
     selection: Option<Selection>,
     /// This computer's name, the title of the Bluetooth group.
     host_name: String,
@@ -40,6 +48,7 @@ impl PulsaarApp {
         let host_name = pulsaar_native::hostname();
         Self {
             store: Store::start(ctx.clone()),
+            icons: Icons::load(ctx),
             selection: None,
             host_name: if host_name.is_empty() {
                 "Bluetooth".to_owned()
@@ -55,10 +64,27 @@ impl PulsaarApp {
 
     pub fn show(&mut self, root: &mut egui::Ui) {
         let ctx = root.ctx().clone();
-        if ctx.input_mut(|i| i.consume_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::R)))
-        {
+        if ctx.input_mut(|i| i.consume_shortcut(&REFRESH)) {
             self.store.send(Command::Reload);
         }
+        egui::Panel::top("menu").show(root, |ui| {
+            egui::MenuBar::new().ui(ui, |ui| {
+                ui.menu_button("Receivers", |ui| {
+                    let refresh =
+                        egui::Button::new("Refresh").shortcut_text(ctx.format_shortcut(&REFRESH));
+                    if ui.add(refresh).clicked() {
+                        self.store.send(Command::Reload);
+                    }
+                });
+                ui.menu_button("Window", |ui| {
+                    if ui.button("Return to Default Size").clicked() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(
+                            DEFAULT_SIZE.into(),
+                        ));
+                    }
+                });
+            });
+        });
         egui::Panel::left("sidebar")
             .resizable(true)
             .min_size(220.0)
@@ -115,7 +141,8 @@ impl PulsaarApp {
             match receiver {
                 Some(i) => {
                     let sel = Selection::Receiver(i);
-                    if group_row(ui, self.selection == Some(sel), name).clicked() {
+                    let icon = m.receivers.get(i).and_then(|r| self.icons.receiver(r.kind));
+                    if group_row(ui, self.selection == Some(sel), name, icon).clicked() {
                         clicked = Some(sel);
                     }
                     let devices = m
@@ -133,6 +160,7 @@ impl PulsaarApp {
                             ui,
                             self.selection == Some(sel),
                             &d.name,
+                            d.kind,
                             d.battery.as_ref().map(|b| {
                                 (
                                     b,
@@ -152,7 +180,10 @@ impl PulsaarApp {
                     }
                 }
                 None => {
-                    if group_row(ui, self.selection == Some(Selection::Bluetooth), name).clicked() {
+                    let icon = Some(self.icons.bluetooth());
+                    if group_row(ui, self.selection == Some(Selection::Bluetooth), name, icon)
+                        .clicked()
+                    {
                         clicked = Some(Selection::Bluetooth);
                     }
                     for (n, d) in m.direct.iter().enumerate() {
@@ -162,6 +193,7 @@ impl PulsaarApp {
                             ui,
                             self.selection == Some(sel),
                             &d.name,
+                            d.kind,
                             d.battery.as_ref().map(|b| (b, false)),
                             true,
                             last,
@@ -225,11 +257,20 @@ impl PulsaarApp {
 }
 
 /// A receiver or the Bluetooth group in the sidebar.
-fn group_row(ui: &mut egui::Ui, selected: bool, name: &str) -> egui::Response {
-    ui.add(
-        egui::Button::selectable(selected, (RichText::new(name).strong(), egui::Atom::grow()))
-            .min_size([ui.available_width(), 0.0].into()),
-    )
+/// A receiver or the Bluetooth group in the sidebar, with its mark if it has one.
+fn group_row(
+    ui: &mut egui::Ui,
+    selected: bool,
+    name: &str,
+    icon: Option<&egui::TextureHandle>,
+) -> egui::Response {
+    let mut atoms = egui::Atoms::default();
+    if let Some(tex) = icon {
+        atoms.push_right(icons::image(ui, tex, 16.0));
+    }
+    atoms.push_right(RichText::new(name).strong());
+    atoms.push_right(egui::Atom::grow());
+    ui.add(egui::Button::selectable(selected, atoms).min_size([ui.available_width(), 0.0].into()))
 }
 
 /// A device under its group, with a tree connector, its name and its battery.
@@ -238,6 +279,7 @@ fn device_row(
     ui: &mut egui::Ui,
     selected: bool,
     name: &str,
+    kind: DeviceKind,
     battery: Option<(&Battery, bool)>,
     online: bool,
     last: bool,
@@ -266,7 +308,13 @@ fn device_row(
         };
         // Name on the left; the grow atom pushes the battery to the right edge.
         let glyph = egui::IdSalt::new("battery");
-        let mut atoms: egui::Atoms<'_> = (text, egui::Atom::grow()).into_atoms();
+        let kind_icon = egui::IdSalt::new("kind");
+        let mut atoms: egui::Atoms<'_> = (
+            egui::Atom::custom(kind_icon, [16.0, 16.0]),
+            text,
+            egui::Atom::grow(),
+        )
+            .into_atoms();
         let color = battery.map(|(b, cached)| battery_color(ui, b, cached));
         if let (Some((b, _)), Some(color)) = (battery, color) {
             atoms.push_right(egui::Atom::custom(glyph, [20.0, 10.0]));
@@ -277,6 +325,14 @@ fn device_row(
             .atom_ui(ui);
         if let (Some(rect), Some((b, _)), Some(color)) = (resp.rect(glyph), battery, color) {
             paint_battery(ui.painter(), rect, b.level, color);
+        }
+        if let Some(rect) = resp.rect(kind_icon) {
+            let color = if online {
+                ui.visuals().text_color()
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            icons::paint_device(ui.painter(), rect, kind, color);
         }
         resp.response
     })

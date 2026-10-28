@@ -18,7 +18,7 @@ fn main() {
                 width: 64,
                 height: 64,
             })
-            .with_inner_size([760.0, 520.0])
+            .with_inner_size(pulsaar_ui::DEFAULT_SIZE)
             .with_min_inner_size([600.0, 400.0]),
         ..Default::default()
     };
