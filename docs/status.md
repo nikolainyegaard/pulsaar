@@ -7,7 +7,6 @@ Keep this file current: after every change, remove finished items and adjust the
 egui rewrite (branch `egui-rewrite`):
 
 - Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the macOS UI ported (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). Not yet tested by the user with an online device, pairing or unpairing
-- DeviceCache: last battery and full name per serial for offline devices
 - DPI slider: tick labels and the log^1.5 curve of the macOS slider (egui's plain log scale for now)
 - Receiver and device-kind icons (the macOS app used SF Symbols and three SVGs)
 - Harden reply parsing in core (60 unchecked indexes), then drop the `indexing_slicing` allow and return to `panic = "abort"`

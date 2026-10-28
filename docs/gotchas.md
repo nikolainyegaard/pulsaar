@@ -16,6 +16,10 @@ Writing 0x02 to receiver register 0x02 makes the receiver send a 0x41 notificati
 
 On first read the worker rewrites the scroll mode (clears the HID++ target bit) and writes the host name to the active host slot, the host name once per device per run.
 
+## Feature tables are cached per receiver handle
+
+Feature discovery costs 0.6 to 1.4 s per device (one request per feature). `Receiver` keeps each slot's table after the first successful discovery and every setter and settings read uses it, so a write or a notification-triggered refresh skips discovery. A slot's table only changes when another device is paired there; pairing and unpairing reload, which opens new `Receiver`s with empty caches.
+
 ## DJ reports
 
 With the kernel's hid-logitech-dj driver bound (not the case on the author's Fedora laptop, where the receivers use hid-generic), receivers run in DJ mode and send 15-byte reports with ID 0x20. Type 0x42 is the connection status (bit 0 of the first byte set means link lost); types below 0x10 are forwarded input. The core parses them so link changes arrive either way, and `Transport::request` and pairing skip them.

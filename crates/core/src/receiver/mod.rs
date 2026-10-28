@@ -1,6 +1,7 @@
 // Receiver enumeration and device management.
 // Reference: reference/lib/logitech_receiver/receiver.py, base_usb.py
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::time::Duration;
 
@@ -120,6 +121,9 @@ pub struct Receiver {
     pub product_id: u16,
     pub serial: String,
     pub max_devices: u8,
+    /// Feature table per slot, read once: a slot's features only change when
+    /// another device is paired there, and pairing reopens the receiver.
+    features: RefCell<HashMap<u8, HashMap<u16, u8>>>,
 }
 
 /// Enumerate all Logitech receivers attached to the machine.
@@ -214,7 +218,21 @@ impl Receiver {
             product_id: handle.product_id,
             serial,
             max_devices,
+            features: RefCell::default(),
         })
+    }
+
+    /// The slot's feature table: from the cache, or discovered (with `probe`
+    /// as the first request's timeout) and cached when the device answered.
+    fn features(&self, slot: u8, probe: Option<Duration>) -> Result<HashMap<u16, u8>> {
+        if let Some(f) = self.features.borrow().get(&slot) {
+            return Ok(f.clone());
+        }
+        let f = hidpp20::discover_features(&self.transport, slot, probe)?;
+        if !f.is_empty() {
+            self.features.borrow_mut().insert(slot, f.clone());
+        }
+        Ok(f)
     }
 
     /// Query the receiver for the number of currently paired devices.
@@ -370,7 +388,7 @@ impl Receiver {
             Some(Duration::from_millis(500))
         };
         let t_feat = std::time::Instant::now();
-        let feat_result = hidpp20::discover_features(&self.transport, slot, probe);
+        let feat_result = self.features(slot, probe);
         eprintln!(
             "[PULSAAR][TIMING] T+{}ms slot {slot}: discover_features={} ({:.0}ms)",
             crate::t_ms(),
@@ -428,7 +446,7 @@ impl Receiver {
     /// Set the active DPI for the device in the given slot.
     /// Returns Ok without sending anything if the device does not support FEAT_ADJUSTABLE_DPI.
     pub fn set_dpi(&self, slot: u8, dpi: u16) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_dpi(&self.transport, slot, &features, dpi)
     }
 
@@ -440,7 +458,7 @@ impl Receiver {
         inverted: bool,
         hires_enabled: bool,
     ) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_scroll_settings(&self.transport, slot, &features, inverted, hires_enabled)
     }
 
@@ -451,49 +469,49 @@ impl Receiver {
         wheel_mode: u8,
         torque: u8,
     ) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_smart_shift(&self.transport, slot, &features, wheel_mode, torque)
     }
 
     /// Switch the active host for the device in the given slot.
     /// The device will disconnect immediately; no reply is expected.
     pub fn set_active_host(&self, slot: u8, host_slot: u8) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_active_host(&self.transport, slot, &features, host_slot)
     }
 
     /// Write the given name to a host slot for the device.
     /// No-op if FEAT_HOSTS_INFO (0x1815) is absent or the device does not support name writes.
     pub fn set_host_name(&self, slot: u8, host_slot: u8, name: &str) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_host_name(&self.transport, slot, &features, host_slot, name)
     }
 
     /// Set FN key inversion for the device in the given slot.
     pub fn set_fn_swap(&self, slot: u8, swapped: bool) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_fn_swap(&self.transport, slot, &features, swapped)
     }
 
     /// Set the active OS platform for the device in the given slot.
     pub fn set_multiplatform(&self, slot: u8, platform_index: u8) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_multiplatform(&self.transport, slot, &features, platform_index)
     }
 
     /// Set backlight mode and brightness for the device in the given slot.
     pub fn set_backlight(&self, slot: u8, mode: u8, level: u8) -> crate::error::Result<()> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         hidpp20::set_backlight(&self.transport, slot, &features, mode, level)
     }
 
     /// Read all configurable settings for the device in the given slot in a single operation.
     ///
-    /// Calls discover_features once and reads every feature with the same map, avoiding
+    /// Uses the slot's feature table once for every feature, avoiding
     /// the 7x redundant discovery overhead of calling each get_* method individually.
     /// Individual feature errors are treated as absent (None) rather than propagated.
     pub fn get_all_settings(&self, slot: u8) -> crate::error::Result<AllDeviceSettings> {
-        let features = hidpp20::discover_features(&self.transport, slot, None)?;
+        let features = self.features(slot, None)?;
         // Clear any 0x1B04 (REPROG_CONTROLS_V4) temporary diversions set by Options+.
         // Diverted buttons send CID events via HID++ that Pulsaar reads and discards,
         // making the physical buttons inert (SmartShift toggle, etc.). Clearing here
