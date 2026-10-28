@@ -1,5 +1,4 @@
 /// What kind of device this is.
-/// Discriminants are the FFI encoding (CDeviceInfo.kind); keep them stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum DeviceKind {
@@ -41,7 +40,6 @@ impl DeviceKind {
 }
 
 /// Battery charging/discharging status.
-/// Discriminants are the FFI encoding (CBattery.status); keep them stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BatteryStatus {
@@ -77,4 +75,6 @@ pub struct DeviceInfo {
     /// Wireless product ID (2 bytes).
     pub wpid: [u8; 2],
     pub battery: Option<Battery>,
+    /// True when the device answered HID++ 2.0 during enumeration.
+    pub online: bool,
 }

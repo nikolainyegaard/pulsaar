@@ -30,6 +30,7 @@ pub const FEAT_BACKLIGHT2: u16 = 0x1982;
 pub const FEAT_REPROG_CONTROLS: u16 = 0x1B04;
 
 /// DPI capabilities and current state for a device with FEAT_ADJUSTABLE_DPI.
+#[derive(Debug, Clone)]
 pub struct DpiInfo {
     /// Sorted list of discrete DPI steps the sensor supports.
     pub dpi_list: Vec<u16>,
@@ -40,6 +41,7 @@ pub struct DpiInfo {
 }
 
 /// Scroll wheel capabilities and current state for a device with FEAT_HIRES_WHEEL.
+#[derive(Debug, Clone)]
 pub struct ScrollInfo {
     pub has_invert: bool,
     pub has_hires: bool,
@@ -589,6 +591,7 @@ pub fn set_scroll_settings(
 /// wheel_mode:  1=always freespin, 2=smart-shift (auto switches based on speed).
 /// has_torque:  true when the device supports tunable ratchet torque.
 /// torque:      ratchet engagement torque, 1-100 (only valid when has_torque is true).
+#[derive(Debug, Clone)]
 pub struct SmartShiftInfo {
     pub wheel_mode: u8,
     pub has_torque: bool,
@@ -664,6 +667,7 @@ pub fn set_smart_shift(
 // -- Change Host (0x1814 + 0x1815) --------------------------------------------
 
 /// Info about one host slot as reported by FEAT_HOSTS_INFO (0x1815).
+#[derive(Debug, Clone)]
 pub struct HostInfo {
     pub slot: u8,
     pub name: String,
@@ -842,6 +846,7 @@ pub fn set_host_name(
 ///
 /// fn_swapped: true when F1-F12 behave as multimedia keys by default;
 ///             false when they behave as standard function keys.
+#[derive(Debug, Clone)]
 pub struct FnInfo {
     pub fn_swapped: bool,
     pub default_fn_swapped: bool,
@@ -940,6 +945,7 @@ pub fn set_fn_swap(
 // -- Multiplatform / Set OS (0x4531) ------------------------------------------
 
 /// One platform descriptor returned by FEAT_MULTIPLATFORM.
+#[derive(Debug, Clone)]
 pub struct PlatformDescriptor {
     pub index: u8,
     /// Human-readable OS name derived from the os_flags bitmask.
@@ -951,6 +957,7 @@ pub struct PlatformDescriptor {
 /// can_set:   false when the device does not allow changing the platform.
 /// current:   index of the currently active platform descriptor.
 /// platforms: list of available platform descriptors in descriptor order.
+#[derive(Debug, Clone)]
 pub struct MultiplatformInfo {
     pub can_set: bool,
     pub current: u8,
@@ -1065,6 +1072,7 @@ pub fn set_multiplatform(
 /// auto_supported:   true if automatic mode is available.
 /// manual_supported: true if manual (permanent-on) mode is available.
 /// level:            brightness 0-100 (relevant when mode=3).
+#[derive(Debug, Clone)]
 pub struct BacklightInfo {
     pub mode: u8,
     pub auto_supported: bool,

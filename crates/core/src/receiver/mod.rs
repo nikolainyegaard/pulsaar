@@ -48,7 +48,6 @@ pub fn is_receiver_pid(pid: u16) -> bool {
     RECEIVERS.iter().any(|&(p, _)| p == pid)
 }
 
-/// Discriminants are the FFI encoding (COpenedReceiverInfo.kind); keep them stable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum ReceiverKind {
@@ -84,6 +83,7 @@ pub struct ReceiverHandle {
 }
 
 /// All configurable settings for one device, batched from a single feature discovery.
+#[derive(Debug, Clone)]
 pub struct AllDeviceSettings {
     pub dpi: Option<hidpp20::DpiInfo>,
     pub scroll: Option<hidpp20::ScrollInfo>,
@@ -273,7 +273,7 @@ impl Receiver {
         };
 
         let t_info = std::time::Instant::now();
-        let (hidpp2_name, battery) = self.read_device_info(slot);
+        let (hidpp2_name, battery, online) = self.read_device_info(slot);
         eprintln!(
             "[PULSAAR][TIMING] T+{}ms slot {slot}: read_device_info ({:.0}ms)",
             crate::t_ms(),
@@ -288,6 +288,7 @@ impl Receiver {
             serial,
             wpid,
             battery,
+            online,
         })
     }
 
@@ -325,7 +326,8 @@ impl Receiver {
     }
 
     /// Attempt to read name and battery from a device, trying HID++ 2.0 first.
-    fn read_device_info(&self, slot: u8) -> (Option<String>, Option<Battery>) {
+    /// The third value is true when the device answered HID++ 2.0, i.e. it is online.
+    fn read_device_info(&self, slot: u8) -> (Option<String>, Option<Battery>, bool) {
         // Probe for HID++ 2.0 support with a short timeout so offline devices are
         // skipped in ~500ms instead of waiting for the full DEVICE_TIMEOUT.
         let t_feat = std::time::Instant::now();
@@ -362,14 +364,14 @@ impl Receiver {
                             .ok()
                             .flatten()
                     });
-                (name, battery)
+                (name, battery, true)
             }
             _ => {
                 // discover_features failed: device is offline (wireless) or HID++ 1.0 only.
                 // Skip the HID++ 1.0 battery fallback -- those requests go to the device
                 // slot and each times out at DEVICE_TIMEOUT for offline Bolt/Unifying devices.
                 // Battery for HID++ 1.0 devices comes from prefetch/cache instead.
-                (None, None)
+                (None, None, false)
             }
         }
     }
@@ -733,12 +735,18 @@ impl Receiver {
     /// reach the vendor interface. Everything else routes through standard USB HID.
     pub fn open_for_events(api: &HidApi, handle: &ReceiverHandle) -> Result<Self> {
         let recv = Self::open(api, handle)?;
-        if let Ok(flags) = hidpp10::get_notification_flags(&recv.transport) {
+        recv.listen_for_events();
+        Ok(recv)
+    }
+
+    /// Set the notification flags to NOTIF_WIRELESS only, as `open_for_events`
+    /// does; call after pairing, which sets more flags.
+    pub fn listen_for_events(&self) {
+        if let Ok(flags) = hidpp10::get_notification_flags(&self.transport) {
             if flags != hidpp10::NOTIF_WIRELESS {
-                let _ = hidpp10::set_notification_flags(&recv.transport, hidpp10::NOTIF_WIRELESS);
+                let _ = hidpp10::set_notification_flags(&self.transport, hidpp10::NOTIF_WIRELESS);
             }
         }
-        Ok(recv)
     }
 
     /// Poll for one device connection-state event. Blocks for at most timeout_ms milliseconds.

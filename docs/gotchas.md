@@ -6,6 +6,14 @@ Protocol and feature quirks live in [core.md](core.md); platform-specific ones i
 
 Reversed 2026-10-28. The original plan was one SwiftUI app, one WinUI 3 app and a shared core, chosen so each platform would feel right. It doubled every UI change and left Linux out. OxTree proved the egui route on all three platforms, so Pulsaar follows it. The cost is a UI that looks the same everywhere rather than native.
 
+## One handle per receiver, held by the worker
+
+The SwiftUI app opened a receiver for each read and stopped its event listeners around every read, because macOS allows one open handle per receiver. The worker opens each receiver once with `open_for_events` and uses that handle for everything, so the prefetch races, `isPrefetching` waits and listener restarts are gone. Notifications that arrive during a request are skipped by `Transport::request`, as they were before. Pairing sets more notification flags; `listen_for_events` puts them back when pairing ends.
+
+## Settings are read only for online devices
+
+`DeviceInfo::online` is true when the device answered HID++ 2.0 during enumeration. Reading settings of an offline device waits the full 4 s device timeout, so the worker skips them; a link-change notification triggers a reload, which reads the device once it is online. On first read the worker rewrites the scroll mode (clears the HID++ target bit) and writes the host name to the active host slot, as the macOS prefetch did.
+
 ## The release profile unwinds
 
 OxTree aborts on panic; Pulsaar unwinds. The reply parsers index into `params()` without length checks, and the FFI used to hide that behind `catch_unwind`. Until the parsers use `get()`, a malformed reply must only kill the HID worker, not the window.

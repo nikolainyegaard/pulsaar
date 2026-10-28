@@ -14,6 +14,7 @@ pub mod transport;
 pub use devices::types::{Battery, BatteryStatus, DeviceInfo, DeviceKind};
 pub use direct::DirectDeviceInfo;
 pub use error::{Error, Result};
+pub use hidapi::HidApi;
 pub use receiver::{enumerate_receivers, Receiver, ReceiverHandle, ReceiverKind};
 
 use std::sync::OnceLock;

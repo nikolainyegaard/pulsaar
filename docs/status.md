@@ -6,10 +6,10 @@ Keep this file current: after every change, remove finished items and adjust the
 
 egui rewrite (branch `egui-rewrite`):
 
-- Workspace skeleton done 2026-10-28: the window opens and lists receivers; nothing else yet
-- HID worker thread with a command channel and state snapshots; hot-plug by diffing the HID device list
-- Port the macOS UI: sidebar tree, device, receiver and Bluetooth detail panes, settings panel, pairing and info modals, toasts
-- DeviceCache (battery and full names per serial, same JSON as the Swift app)
+- Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the macOS UI ported (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). Not yet tested by the user with an online device, pairing or unpairing
+- DeviceCache: last battery and full name per serial for offline devices
+- DPI slider: tick labels and the log^1.5 curve of the macOS slider (egui's plain log scale for now)
+- Receiver and device-kind icons (the macOS app used SF Symbols and three SVGs)
 - Harden reply parsing in core (60 unchecked indexes), then drop the `indexing_slicing` allow and return to `panic = "abort"`
 - Pick a license; cargo-deb and cargo-generate-rpm need the `license` field before the first tag
 - Core has no tests; add fixture tests for the reply parsers while hardening them

@@ -18,8 +18,8 @@ fn main() {
                 width: 64,
                 height: 64,
             })
-            .with_inner_size([900.0, 600.0])
-            .with_min_inner_size([640.0, 400.0]),
+            .with_inner_size([760.0, 520.0])
+            .with_min_inner_size([600.0, 400.0]),
         ..Default::default()
     };
     let result = eframe::run_native(
@@ -27,7 +27,7 @@ fn main() {
         options,
         Box::new(|cc| {
             cc.egui_ctx.set_fonts(fonts());
-            Ok(Box::new(Shell(PulsaarApp::new())))
+            Ok(Box::new(Shell(PulsaarApp::new(&cc.egui_ctx))))
         }),
     );
     if let Err(e) = result {

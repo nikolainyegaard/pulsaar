@@ -36,8 +36,9 @@ pulsaar/
 │   │       ├── receiver/        Unifying/Bolt receiver logic, AllDeviceSettings
 │   │       ├── direct/          direct Bluetooth device enumeration
 │   │       └── bin/             list_devices.rs, probe_settings.rs (debug tools)
-│   ├── native/                  platform glue without UI: config directory (pulsaar-native)
+│   ├── native/                  platform glue without UI: config directory, host name, Bluetooth settings (pulsaar-native)
 │   └── ui/                      egui views and application state (pulsaar-ui)
+│       └── src/                 lib.rs (app, sidebar, toast), detail.rs (panes, settings), dialogs.rs, store.rs (HID worker)
 ├── apps/pulsaar/                the binary: window, fonts, icon; deb and rpm metadata
 ├── packaging/                   desktop entry, icons, AppStream metainfo, udev rule, Info.plist
 ├── macos/, windows/             previous native apps, kept as the spec until parity
@@ -48,7 +49,7 @@ pulsaar/
 
 ## Layers
 
-Dependencies point downwards only: `apps/pulsaar` uses `ui`, `native` and `core`; `ui` uses `native` and `core`; nothing below the binary opens a window. HID++ traffic belongs on a worker thread owned by the UI crate, never on the UI thread; enumerating receivers is the exception, since it only reads the OS device list.
+Dependencies point downwards only: `apps/pulsaar` uses `ui`, `native` and `core`; `ui` uses `native` and `core`; nothing below the binary opens a window. All HID++ traffic runs on one worker thread (`crates/ui/src/store.rs`). It opens each receiver once per reload and keeps that handle for requests, notifications and pairing, polling notifications every 100 ms and the OS device list every 2 s for plug and unplug. The UI sends commands and reads a shared model; the worker locks the model only to copy results in, never across a HID call.
 
 ## Build and release infrastructure
 
