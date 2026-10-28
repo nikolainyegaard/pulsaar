@@ -56,7 +56,7 @@ fn pairing(app: &mut PulsaarApp, ctx: &egui::Context) {
                     numeric: true,
                 } => {
                     ui.label("Enter this passkey on your keyboard:");
-                    ui.label(RichText::new(code).monospace().size(34.0));
+                    passkey_badges(ui, code, p.entered);
                     ui.weak("Then press Enter.");
                 }
                 PairingStage::Passkey {
@@ -64,7 +64,7 @@ fn pairing(app: &mut PulsaarApp, ctx: &egui::Context) {
                     numeric: false,
                 } => {
                     ui.label("Press these buttons in order:");
-                    ui.label(RichText::new(spaced(code)).monospace().size(24.0));
+                    passkey_badges(ui, code, p.entered);
                     ui.weak("L = left button, R = right button");
                     ui.weak("Then press both buttons together.");
                 }
@@ -129,9 +129,52 @@ fn pairing(app: &mut PulsaarApp, ctx: &egui::Context) {
     }
 }
 
-/// "LRRL" as "L R R L", easier to follow while pressing.
-fn spaced(code: &str) -> String {
-    code.chars().map(String::from).collect::<Vec<_>>().join(" ")
+/// The passkey as a row of badges, as in the macOS app: L blue, R orange,
+/// digits neutral. The first `entered` are crossed out as the device
+/// reports them pressed.
+fn passkey_badges(ui: &mut egui::Ui, code: &str, entered: usize) {
+    const SIZE: f32 = 28.0;
+    const GAP: f32 = 5.0;
+    let n = code.chars().count();
+    let width = n as f32 * SIZE + n.saturating_sub(1) as f32 * GAP;
+    let (rect, _) = ui.allocate_exact_size([width, SIZE].into(), egui::Sense::hover());
+    let p = ui.painter();
+    let weak = ui.visuals().weak_text_color();
+    for (i, ch) in code.chars().enumerate() {
+        let min = rect.min + egui::vec2(i as f32 * (SIZE + GAP), 0.0);
+        let badge = egui::Rect::from_min_size(min, egui::Vec2::splat(SIZE));
+        let done = i < entered;
+        let hue = match ch {
+            'L' => Color32::from_rgb(0x3b, 0x82, 0xf6),
+            'R' => Color32::from_rgb(0xf5, 0x9e, 0x0b),
+            _ => ui.visuals().text_color(),
+        };
+        let hue = if done { weak } else { hue };
+        p.rect_filled(badge, 5.0, hue.gamma_multiply(0.15));
+        p.rect_stroke(
+            badge,
+            5.0,
+            egui::Stroke::new(1.0, hue.gamma_multiply(0.5)),
+            egui::StrokeKind::Inside,
+        );
+        p.text(
+            badge.center(),
+            egui::Align2::CENTER_CENTER,
+            ch,
+            egui::FontId::monospace(18.0),
+            if done {
+                weak
+            } else {
+                ui.visuals().strong_text_color()
+            },
+        );
+        if done {
+            let cross = egui::Stroke::new(2.0, weak);
+            let b = badge.shrink(6.0);
+            p.line_segment([b.left_top(), b.right_bottom()], cross);
+            p.line_segment([b.right_top(), b.left_bottom()], cross);
+        }
+    }
 }
 
 fn unpair(app: &mut PulsaarApp, ctx: &egui::Context) {

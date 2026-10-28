@@ -14,7 +14,9 @@ use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pulsaar_core::direct::enumerate_direct_devices;
-use pulsaar_core::receiver::{AllDeviceSettings, DeviceEvent, PairingEvent, PairingSession};
+use pulsaar_core::receiver::{
+    AllDeviceSettings, DeviceEvent, PairingEvent, PairingSession, PasskeyEntry,
+};
 use pulsaar_core::{
     enumerate_receivers, Battery, BatteryStatus, DeviceInfo, DirectDeviceInfo, HidApi, Receiver,
     ReceiverKind,
@@ -81,6 +83,8 @@ pub struct Pairing {
     pub receiver: usize,
     pub stage: PairingStage,
     pub device_name: String,
+    /// Passkey digits or buttons the device reports as entered so far.
+    pub entered: usize,
 }
 
 #[derive(Default)]
@@ -400,32 +404,40 @@ impl Worker {
         let _ = self.api.refresh_devices();
         self.paths = hidpp_paths(&self.api);
         let handles = enumerate_receivers(&self.api);
-        self.update(|m| {
-            m.loading = true;
-            m.error = None;
-            m.receivers.clear();
-            m.settings.clear();
-            m.cached_battery.clear();
-        });
+        // The first scan fills the sidebar device by device. Later scans keep
+        // the old list on screen and swap in the new one when it is complete,
+        // so a rescan after pairing changes only what changed.
+        let streaming = lock(&self.model).receivers.is_empty();
+        self.update(|m| m.loading = true);
+        let mut views: Vec<ReceiverView> = Vec::new();
+        let mut cached_keys = HashSet::new();
+        let mut error = None;
+        let publish = |w: &Self, views: &[ReceiverView], cached: &HashSet<DeviceKey>| {
+            w.update(|m| {
+                m.receivers = views.to_vec();
+                m.cached_battery.clone_from(cached);
+            });
+        };
         for h in handles {
             let r = match Receiver::open_for_events(&self.api, &h) {
                 Ok(r) => r,
                 Err(e) => {
-                    let msg = format!("Could not open the {}: {e}", h.name);
-                    self.update(|m| m.error = Some(msg));
+                    error = Some(format!("Could not open the {}: {e}", h.name));
                     continue;
                 }
             };
             let index = self.receivers.len();
-            let view = ReceiverView {
+            views.push(ReceiverView {
                 name: r.name,
                 kind: r.kind,
                 product_id: r.product_id,
                 serial: r.serial.clone(),
                 max_devices: r.max_devices,
                 devices: Vec::new(),
-            };
-            self.update(|m| m.receivers.push(view));
+            });
+            if streaming {
+                publish(self, &views, &cached_keys);
+            }
             let paired = r.get_paired_device_count();
             let links = r.link_states(paired);
             let mut found = 0;
@@ -435,25 +447,36 @@ impl Worker {
                 }
                 if let Some(mut info) = r.enumerate_slot(slot, links.get(&slot).copied()) {
                     found += 1;
-                    let cached = self.apply_cache(&mut info);
-                    let key = DeviceKey {
-                        receiver: index,
-                        slot,
-                    };
-                    self.update(|m| {
-                        if let Some(v) = m.receivers.get_mut(index) {
-                            v.devices.push(info);
-                        }
-                        if cached {
-                            m.cached_battery.insert(key);
-                        }
-                    });
+                    if self.apply_cache(&mut info) {
+                        cached_keys.insert(DeviceKey {
+                            receiver: index,
+                            slot,
+                        });
+                    }
+                    if let Some(v) = views.last_mut() {
+                        v.devices.push(info);
+                    }
+                    if streaming {
+                        publish(self, &views, &cached_keys);
+                    }
                 }
             }
             self.receivers.push(r);
         }
         let direct = enumerate_direct_devices(&self.api, &mut self.unprobeable);
-        self.update(|m| m.direct = direct);
+        publish(self, &views, &cached_keys);
+        self.update(|m| {
+            m.direct = direct;
+            m.error = error;
+            // Settings of devices still online stay on screen until re-read.
+            let receivers = &m.receivers;
+            m.settings.retain(|k, _| {
+                receivers
+                    .get(k.receiver)
+                    .and_then(|r| r.devices.iter().find(|d| d.slot == k.slot))
+                    .is_some_and(|d| d.online)
+            });
+        });
 
         let online: Vec<DeviceKey> = lock(&self.model)
             .receivers
@@ -635,6 +658,7 @@ impl Worker {
                 receiver: index,
                 stage,
                 device_name: String::new(),
+                entered: 0,
             })
         });
     }
@@ -652,8 +676,21 @@ impl Worker {
             Ok(ev) => ev,
             Err(e) => PairingEvent::Failed(e.to_string()),
         };
+        if let PairingEvent::PasskeyProgress(step) = event {
+            self.update(|m| {
+                if let Some(p) = m.pairing.as_mut() {
+                    p.entered = match step {
+                        PasskeyEntry::Started | PasskeyEntry::Cleared => 0,
+                        PasskeyEntry::Entered => p.entered + 1,
+                        PasskeyEntry::Erased => p.entered.saturating_sub(1),
+                        PasskeyEntry::Completed => usize::MAX,
+                    };
+                }
+            });
+            return;
+        }
         let (stage, name) = match event {
-            PairingEvent::Waiting => return,
+            PairingEvent::Waiting | PairingEvent::PasskeyProgress(_) => return,
             PairingEvent::BoltDeviceFound(name) => (PairingStage::Found, Some(name)),
             PairingEvent::PasskeyNumeric(code) => (
                 PairingStage::Passkey {

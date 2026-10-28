@@ -556,6 +556,7 @@ const DJ_CONNECTION_STATUS: u8 = 0x42; // DJ report type: link established or lo
 const NOTIF_PAIRING_LOCK: u8 = 0x4A; // Unifying: lock opened/closed
 const NOTIF_POWER: u8 = 0x4B; // device powered on/off
 const NOTIF_PASSKEY_REQUEST: u8 = 0x4D; // Bolt: passkey request
+const NOTIF_PASSKEY_PRESSED: u8 = 0x4E; // Bolt: a passkey digit or button was entered
 const NOTIF_DEVICE_DISCOVERY: u8 = 0x4F; // Bolt: device found during discovery
 const NOTIF_DISCOVERY_STATUS: u8 = 0x53; // Bolt: discovery lock open/closed
 const NOTIF_PAIRING_STATUS: u8 = 0x54; // Bolt: pairing lock open/closed
@@ -580,6 +581,21 @@ pub struct PairingSession {
     pub passkey: Option<String>,
 }
 
+/// One step of passkey entry on the device being paired.
+///
+/// ponytail: the 0x4E payload is undocumented (Solaar ignores it). This reads
+/// the address byte as a Bluetooth LE SMP keypress notification type, which
+/// Bolt's pairing resembles: 0 started, 1 entered, 2 erased, 3 cleared,
+/// 4 completed. The raw bytes are logged so one pairing confirms or corrects it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasskeyEntry {
+    Started,
+    Entered,
+    Erased,
+    Cleared,
+    Completed,
+}
+
 /// Events returned by Receiver::poll_pairing.
 pub enum PairingEvent {
     /// Still waiting; no relevant notification received within the timeout.
@@ -590,6 +606,8 @@ pub enum PairingEvent {
     PasskeyNumeric(String),
     /// Bolt: button passkey -- encoded as a string of 'L'/'R' characters; press simultaneously when done.
     PasskeyButton(String),
+    /// Bolt: the device reported passkey entry progress.
+    PasskeyProgress(PasskeyEntry),
     /// Pairing complete. slot is the 1-based slot of the new device.
     Paired(u8),
     /// Pairing failed.
@@ -701,6 +719,21 @@ impl Receiver {
                         }
                     }
                     Ok(PairingEvent::Waiting)
+                }
+                NOTIF_PASSKEY_PRESSED => {
+                    eprintln!(
+                        "[PULSAAR][PAIRING] passkey pressed: address={:02X} params={:02X?}",
+                        address, params
+                    );
+                    let entry = match address {
+                        0 => PasskeyEntry::Started,
+                        1 => PasskeyEntry::Entered,
+                        2 => PasskeyEntry::Erased,
+                        3 => PasskeyEntry::Cleared,
+                        4 => PasskeyEntry::Completed,
+                        _ => return Ok(PairingEvent::Waiting),
+                    };
+                    Ok(PairingEvent::PasskeyProgress(entry))
                 }
                 NOTIF_PASSKEY_REQUEST => {
                     // params[0..6] = passkey as an ASCII decimal string (e.g. "048" or "512").
