@@ -6,7 +6,7 @@ pub mod store;
 
 use std::time::{Duration, Instant};
 
-use eframe::egui::{self, Color32, Key, KeyboardShortcut, Modifiers, RichText};
+use eframe::egui::{self, Color32, IntoAtoms, Key, KeyboardShortcut, Modifiers, RichText};
 use pulsaar_core::{Battery, BatteryStatus, DeviceKind, ReceiverKind};
 
 use store::{Command, DeviceKey, Model, Store};
@@ -227,7 +227,7 @@ impl PulsaarApp {
 /// A receiver or the Bluetooth group in the sidebar.
 fn group_row(ui: &mut egui::Ui, selected: bool, name: &str) -> egui::Response {
     ui.add(
-        egui::Button::selectable(selected, RichText::new(name).strong())
+        egui::Button::selectable(selected, (RichText::new(name).strong(), egui::Atom::grow()))
             .min_size([ui.available_width(), 0.0].into()),
     )
 }
@@ -264,24 +264,28 @@ fn device_row(
         } else {
             RichText::new(name).weak()
         };
-        let resp = ui.add(
-            egui::Button::selectable(selected, text)
-                .min_size([ui.available_width() - 70.0, 0.0].into()),
-        );
-        if let Some((b, cached)) = battery {
-            battery_badge(ui, b, cached);
+        // Name on the left; the grow atom pushes the battery to the right edge.
+        let glyph = egui::IdSalt::new("battery");
+        let mut atoms: egui::Atoms<'_> = (text, egui::Atom::grow()).into_atoms();
+        let color = battery.map(|(b, cached)| battery_color(ui, b, cached));
+        if let (Some((b, _)), Some(color)) = (battery, color) {
+            atoms.push_right(egui::Atom::custom(glyph, [20.0, 10.0]));
+            atoms.push_right(RichText::new(level_text(b)).size(11.0).color(color));
         }
-        resp
+        let resp = egui::Button::selectable(selected, atoms)
+            .min_size([ui.available_width(), 0.0].into())
+            .atom_ui(ui);
+        if let (Some(rect), Some((b, _)), Some(color)) = (resp.rect(glyph), battery, color) {
+            paint_battery(ui.painter(), rect, b.level, color);
+        }
+        resp.response
     })
     .inner
 }
 
-/// Level text and a small battery glyph, coloured by charge.
-fn battery_badge(ui: &mut egui::Ui, b: &Battery, cached: bool) {
-    let color = battery_color(ui, b, cached);
-    let (rect, _) = ui.allocate_exact_size([20.0, 10.0].into(), egui::Sense::hover());
+/// A small battery outline filled to `level`.
+fn paint_battery(p: &egui::Painter, rect: egui::Rect, level: Option<u8>, color: Color32) {
     let body = egui::Rect::from_min_max(rect.min, [rect.max.x - 2.0, rect.max.y].into());
-    let p = ui.painter();
     p.rect_stroke(
         body,
         2.0,
@@ -296,12 +300,11 @@ fn battery_badge(ui: &mut egui::Ui, b: &Battery, cached: bool) {
         0.0,
         color,
     );
-    if let Some(level) = b.level {
+    if let Some(level) = level {
         let mut fill = body.shrink(2.0);
         fill.set_width(fill.width() * f32::from(level.min(100)) / 100.0);
         p.rect_filled(fill, 1.0, color);
     }
-    ui.label(RichText::new(level_text(b)).small().color(color));
 }
 
 /// Green while charging, orange at 25% and red at 10%; grey when `cached`.
