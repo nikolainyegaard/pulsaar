@@ -52,6 +52,22 @@ pub enum BatteryStatus {
     ThermalError = 6,
 }
 
+impl BatteryStatus {
+    /// Decode the charging-status byte shared by FEAT_BATTERY_STATUS (0x1000)
+    /// and FEAT_UNIFIED_BATTERY (0x1004); the discriminants equal it.
+    pub fn from_byte(b: u8) -> Self {
+        match b {
+            1 => Self::Recharging,
+            2 => Self::AlmostFull,
+            3 => Self::Full,
+            4 => Self::SlowRecharge,
+            5 => Self::InvalidBattery,
+            6 => Self::ThermalError,
+            _ => Self::Discharging,
+        }
+    }
+}
+
 /// Battery state for a device.
 #[derive(Debug, Clone)]
 pub struct Battery {

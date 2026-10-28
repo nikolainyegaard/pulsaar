@@ -22,15 +22,13 @@ pub fn device(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey) {
     };
     let settings = m.settings.get(&key).cloned();
     let loading = m.loading;
+    let battery = d
+        .battery
+        .as_ref()
+        .map(|b| (b, m.cached_battery.contains(&key)));
     drop(m);
 
-    header(
-        ui,
-        &d.name,
-        kind_label(d.kind),
-        Some(d.online),
-        d.battery.as_ref(),
-    );
+    header(ui, &d.name, kind_label(d.kind), Some(d.online), battery);
     ui.separator();
     if !d.online {
         ui.weak(
@@ -52,7 +50,7 @@ pub fn device(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey) {
     }
     ui.add_space(12.0);
     egui::CollapsingHeader::new("Device info").show(ui, |ui| {
-        info_grid(ui, d.battery.as_ref(), |ui| {
+        info_grid(ui, battery, |ui| {
             row(ui, "Type", kind_label(d.kind));
             row(ui, "Connection", connection_label(r.kind));
             row(
@@ -157,12 +155,18 @@ pub fn direct(app: &mut PulsaarApp, ui: &mut egui::Ui, index: usize) {
         app.selection = None;
         return;
     };
-    header(ui, &d.name, kind_label(d.kind), None, d.battery.as_ref());
+    header(
+        ui,
+        &d.name,
+        kind_label(d.kind),
+        None,
+        d.battery.as_ref().map(|b| (b, false)),
+    );
     ui.separator();
     ui.weak("Settings for Bluetooth devices are not supported yet.");
     ui.add_space(12.0);
     egui::CollapsingHeader::new("Device info").show(ui, |ui| {
-        info_grid(ui, d.battery.as_ref(), |ui| {
+        info_grid(ui, d.battery.as_ref().map(|b| (b, false)), |ui| {
             row(ui, "Type", kind_label(d.kind));
             row(ui, "Connection", "Bluetooth");
             row(ui, "Product ID", &format!("0x{:04X}", d.product_id));
@@ -184,7 +188,7 @@ fn header(
     name: &str,
     kind: &str,
     online: Option<bool>,
-    battery: Option<&Battery>,
+    battery: Option<(&Battery, bool)>,
 ) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
@@ -204,25 +208,39 @@ fn header(
                 }
             });
         });
-        if let Some(b) = battery {
+        if let Some((b, cached)) = battery {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
                     RichText::new(level_text(b))
                         .heading()
-                        .color(battery_color(ui, b)),
-                );
+                        .color(battery_color(ui, b, cached)),
+                )
+                .on_hover_text(if cached {
+                    "Last seen, the device is offline"
+                } else {
+                    "Battery"
+                });
             });
         }
     });
 }
 
-fn info_grid(ui: &mut egui::Ui, battery: Option<&Battery>, rows: impl FnOnce(&mut egui::Ui)) {
+fn info_grid(
+    ui: &mut egui::Ui,
+    battery: Option<(&Battery, bool)>,
+    rows: impl FnOnce(&mut egui::Ui),
+) {
     egui::Grid::new(ui.next_auto_id())
         .num_columns(2)
         .spacing([24.0, 6.0])
         .show(ui, |ui| {
-            if let Some(b) = battery {
-                row(ui, "Battery", &level_text(b));
+            if let Some((b, cached)) = battery {
+                let label = if cached {
+                    "Battery (last seen)"
+                } else {
+                    "Battery"
+                };
+                row(ui, label, &level_text(b));
                 if let Some(s) = b.status {
                     row(ui, "Status", status_label(s));
                 }

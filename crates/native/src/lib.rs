@@ -1,5 +1,7 @@
 //! Platform glue with no UI: where Pulsaar keeps its files.
 
+pub mod cache;
+
 use std::path::PathBuf;
 
 /// The directory for Pulsaar's own files: `~/Library/Application Support/Pulsaar`

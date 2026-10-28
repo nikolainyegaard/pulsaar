@@ -195,21 +195,6 @@ pub fn feature_call(
 
 // -- High-level accessors -----------------------------------------------------
 
-/// Decode the charging-status byte shared by FEAT_BATTERY_STATUS (0x1000)
-/// and FEAT_UNIFIED_BATTERY (0x1004).
-fn status_from_byte(b: u8) -> BatteryStatus {
-    match b {
-        0 => BatteryStatus::Discharging,
-        1 => BatteryStatus::Recharging,
-        2 => BatteryStatus::AlmostFull,
-        3 => BatteryStatus::Full,
-        4 => BatteryStatus::SlowRecharge,
-        5 => BatteryStatus::InvalidBattery,
-        6 => BatteryStatus::ThermalError,
-        _ => BatteryStatus::Discharging,
-    }
-}
-
 /// Get the device name. Requires FEAT_DEVICE_NAME to be present in features.
 /// The HID++ 2.0 device name feature (0x0005) returns the name across possibly
 /// multiple chunks; we read only the first chunk here (sufficient for most devices).
@@ -311,7 +296,7 @@ pub fn get_battery_status(
     let reply = feature_call(transport, device, idx, 0, &[])?;
     let p = reply.params();
     let level = p.first().copied();
-    let status = p.get(2).map(|&b| status_from_byte(b));
+    let status = p.get(2).map(|&b| BatteryStatus::from_byte(b));
 
     Ok(Some(Battery {
         level,
@@ -353,7 +338,7 @@ pub fn get_unified_battery(
         })
     };
 
-    let status = p.get(2).map(|&b| status_from_byte(b));
+    let status = p.get(2).map(|&b| BatteryStatus::from_byte(b));
 
     Ok(Some(Battery {
         level,

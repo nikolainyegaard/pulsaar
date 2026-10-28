@@ -7,7 +7,7 @@
 //! the model only to copy results in, never across a HID call, and asks egui
 //! for a repaint after each change.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -16,8 +16,10 @@ use eframe::egui;
 use pulsaar_core::direct::enumerate_direct_devices;
 use pulsaar_core::receiver::{AllDeviceSettings, DeviceEvent, PairingEvent, PairingSession};
 use pulsaar_core::{
-    enumerate_receivers, DeviceInfo, DirectDeviceInfo, HidApi, Receiver, ReceiverKind,
+    enumerate_receivers, Battery, BatteryStatus, DeviceInfo, DirectDeviceInfo, HidApi, Receiver,
+    ReceiverKind,
 };
+use pulsaar_native::cache::{CachedDevice, DeviceCache};
 
 /// A paired device: its receiver's position in [`Model::receivers`] and its slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -87,6 +89,8 @@ pub struct Model {
     pub direct: Vec<DirectDeviceInfo>,
     /// Settings of online devices; a device missing here has none or is offline.
     pub settings: HashMap<DeviceKey, AllDeviceSettings>,
+    /// Devices whose battery is the last one seen, not a live read.
+    pub cached_battery: HashSet<DeviceKey>,
     /// True while a reload enumerates; devices appear one by one meanwhile.
     pub loading: bool,
     pub error: Option<String>,
@@ -170,7 +174,8 @@ struct Worker {
     receivers: Vec<Receiver>,
     /// HID++ interface paths at the last reload; a change means plug or unplug.
     paths: Vec<String>,
-    unprobeable: std::collections::HashSet<String>,
+    unprobeable: HashSet<String>,
+    cache: DeviceCache,
     session: Option<PairingSession>,
     reload_at: Option<Instant>,
     refresh_at: HashMap<DeviceKey, Instant>,
@@ -185,7 +190,8 @@ impl Worker {
             ctx,
             receivers: Vec::new(),
             paths: Vec::new(),
-            unprobeable: Default::default(),
+            unprobeable: HashSet::new(),
+            cache: DeviceCache::load(),
             session: None,
             reload_at: None,
             refresh_at: HashMap::new(),
@@ -316,6 +322,7 @@ impl Worker {
             m.error = None;
             m.receivers.clear();
             m.settings.clear();
+            m.cached_battery.clear();
         });
         for h in handles {
             let r = match Receiver::open_for_events(&self.api, &h) {
@@ -342,11 +349,19 @@ impl Worker {
                 if found >= paired {
                     break;
                 }
-                if let Some(info) = r.enumerate_slot(slot) {
+                if let Some(mut info) = r.enumerate_slot(slot) {
                     found += 1;
+                    let cached = self.apply_cache(&mut info);
+                    let key = DeviceKey {
+                        receiver: index,
+                        slot,
+                    };
                     self.update(|m| {
                         if let Some(v) = m.receivers.get_mut(index) {
                             v.devices.push(info);
+                        }
+                        if cached {
+                            m.cached_battery.insert(key);
                         }
                     });
                 }
@@ -374,6 +389,43 @@ impl Worker {
             self.read_settings(key, true);
         }
         self.update(|m| m.loading = false);
+    }
+
+    /// Remember what an online device reported; fill in the last name and
+    /// battery of an offline one, which reports only its short codename.
+    /// Returns true when the battery shown comes from the cache.
+    fn apply_cache(&mut self, info: &mut DeviceInfo) -> bool {
+        if info.online {
+            let b = info.battery.as_ref();
+            self.cache.remember(
+                &info.serial,
+                CachedDevice {
+                    name: info.name.clone(),
+                    level: b.and_then(|b| b.level),
+                    status: b.and_then(|b| b.status).map(|s| s as u8),
+                    voltage: b.and_then(|b| b.voltage),
+                    seen: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |d| d.as_secs()),
+                },
+            );
+            return false;
+        }
+        let Some(c) = self.cache.get(&info.serial) else {
+            return false;
+        };
+        if !c.name.is_empty() {
+            info.name.clone_from(&c.name);
+        }
+        if info.battery.is_some() || (c.level.is_none() && c.status.is_none()) {
+            return false;
+        }
+        info.battery = Some(Battery {
+            level: c.level,
+            status: c.status.map(BatteryStatus::from_byte),
+            voltage: c.voltage,
+        });
+        true
     }
 
     /// Read all settings of one device into the model. `on_connect` also does

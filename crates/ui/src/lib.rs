@@ -133,7 +133,15 @@ impl PulsaarApp {
                             ui,
                             self.selection == Some(sel),
                             &d.name,
-                            d.battery.as_ref(),
+                            d.battery.as_ref().map(|b| {
+                                (
+                                    b,
+                                    m.cached_battery.contains(&DeviceKey {
+                                        receiver: i,
+                                        slot: d.slot,
+                                    }),
+                                )
+                            }),
                             d.online,
                             last,
                         )
@@ -154,7 +162,7 @@ impl PulsaarApp {
                             ui,
                             self.selection == Some(sel),
                             &d.name,
-                            d.battery.as_ref(),
+                            d.battery.as_ref().map(|b| (b, false)),
                             true,
                             last,
                         )
@@ -225,11 +233,12 @@ fn group_row(ui: &mut egui::Ui, selected: bool, name: &str) -> egui::Response {
 }
 
 /// A device under its group, with a tree connector, its name and its battery.
+/// The battery's flag is true for the last one seen of an offline device.
 fn device_row(
     ui: &mut egui::Ui,
     selected: bool,
     name: &str,
-    battery: Option<&Battery>,
+    battery: Option<(&Battery, bool)>,
     online: bool,
     last: bool,
 ) -> egui::Response {
@@ -259,8 +268,8 @@ fn device_row(
             egui::Button::selectable(selected, text)
                 .min_size([ui.available_width() - 70.0, 0.0].into()),
         );
-        if let Some(b) = battery {
-            battery_badge(ui, b);
+        if let Some((b, cached)) = battery {
+            battery_badge(ui, b, cached);
         }
         resp
     })
@@ -268,8 +277,8 @@ fn device_row(
 }
 
 /// Level text and a small battery glyph, coloured by charge.
-fn battery_badge(ui: &mut egui::Ui, b: &Battery) {
-    let color = battery_color(ui, b);
+fn battery_badge(ui: &mut egui::Ui, b: &Battery, cached: bool) {
+    let color = battery_color(ui, b, cached);
     let (rect, _) = ui.allocate_exact_size([20.0, 10.0].into(), egui::Sense::hover());
     let body = egui::Rect::from_min_max(rect.min, [rect.max.x - 2.0, rect.max.y].into());
     let p = ui.painter();
@@ -295,7 +304,11 @@ fn battery_badge(ui: &mut egui::Ui, b: &Battery) {
     ui.label(RichText::new(level_text(b)).small().color(color));
 }
 
-fn battery_color(ui: &egui::Ui, b: &Battery) -> Color32 {
+/// Green while charging, orange at 25% and red at 10%; grey when `cached`.
+fn battery_color(ui: &egui::Ui, b: &Battery, cached: bool) -> Color32 {
+    if cached {
+        return ui.visuals().weak_text_color();
+    }
     if b.status.is_some_and(is_charging) {
         return Color32::from_rgb(0x2e, 0xa0, 0x43);
     }
