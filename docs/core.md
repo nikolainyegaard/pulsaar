@@ -57,7 +57,7 @@ Run from the workspace root with a receiver attached:
 
 - `cargo run --bin list_devices` lists receivers and devices
 - `cargo run --bin listen [SECONDS]` asks each receiver for link notifications, then prints every HID++ and DJ notification; wake, sleep or switch a device meanwhile
-- `cargo run --bin probe_hosts` prints, read-only, the Change Host, Hosts Info and Device Reset feature versions and flags and the Hosts Info replies of online devices. 2026-10-28 on the MX Anywhere 3S and MX Keys Mini: Device Reset (0x1802) has flags 0x70, hidden and engineering-only, so a software factory reset is not available; Hosts Info capability flags are 0x13, where only bit 0 (host names readable) is documented by Solaar, so per-host delete is unconfirmed
+- `cargo run --bin probe_hosts` prints, read-only, the Change Host, Hosts Info and Device Reset feature versions and flags and the Hosts Info replies of online devices. 2026-10-28 on the MX Anywhere 3S and MX Keys Mini: Device Reset (0x1802) has flags 0x70, hidden and engineering-only, so a software factory reset is not available; Hosts Info capability flags are 0x13, where only bit 0 (host names readable) is documented by Solaar, so per-host delete is unconfirmed. Calling Hosts Info functions 5 and 6 with host 1 on the mouse both returned HID++ 2.0 error 0x05 (Logitech internal), not 0x07 (invalid function): the functions exist but refuse, and the host list was unchanged. Without Logitech's spec this is a dead end
 - `cargo run --bin probe_settings` probes and writes HID++ features with write tests and readback; this confirmed the K375S host-prefixed write and the Backlight2 bits 0-1 encoding
 
 ## Debug logging
