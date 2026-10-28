@@ -340,11 +340,16 @@ fn settings_form(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey, s: &Al
                         },
                     );
                 }
-                if ss.has_torque && ss.wheel_mode == 2 {
-                    ui.label("Ratchet threshold");
-                    if let Some(t) =
-                        level_slider(ui, &mut app.level_drag, ss.torque, 1.0..=100.0, 5)
-                    {
+                // Greyed in freespin rather than hidden, so the form keeps its shape.
+                if ss.has_torque {
+                    let ratchet = ss.wheel_mode == 2;
+                    ui.add_enabled(ratchet, egui::Label::new("Ratchet threshold"));
+                    let t = ui
+                        .add_enabled_ui(ratchet, |ui| {
+                            level_slider(ui, &mut app.level_drag, ss.torque, 1.0..=100.0, 5)
+                        })
+                        .inner;
+                    if let Some(t) = t {
                         store.write(
                             key,
                             Write::SmartShift {
@@ -453,10 +458,16 @@ fn settings_form(app: &mut PulsaarApp, ui: &mut egui::Ui, key: DeviceKey, s: &Al
                     },
                 );
             }
-            if bl.mode == 3 {
-                ui.label("Brightness");
-                if let Some(level) = level_slider(ui, &mut app.level_drag, bl.level, 0.0..=100.0, 1)
-                {
+            // Greyed unless always on, so the form keeps its shape.
+            {
+                let manual = bl.mode == 3;
+                ui.add_enabled(manual, egui::Label::new("Brightness"));
+                let level = ui
+                    .add_enabled_ui(manual, |ui| {
+                        level_slider(ui, &mut app.level_drag, bl.level, 0.0..=100.0, 1)
+                    })
+                    .inner;
+                if let Some(level) = level {
                     store.write(key, Write::Backlight { mode: 3, level });
                 }
                 ui.end_row();

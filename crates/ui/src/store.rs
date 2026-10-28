@@ -146,9 +146,20 @@ impl Store {
 
     /// Write a setting. The model shows the new value at once; the worker
     /// confirms it, or reads the device again when the write fails.
+    /// A write that would not change the device's value is dropped, so a
+    /// slider released where it started sends nothing and shows no toast.
     pub fn write(&self, key: DeviceKey, w: Write) {
-        if let Some(s) = self.model().settings.get_mut(&key) {
-            patch(s, w);
+        {
+            let mut m = self.model();
+            let Some(s) = m.settings.get_mut(&key) else {
+                return;
+            };
+            let mut after = s.clone();
+            patch(&mut after, w);
+            if same_values(s, &after) {
+                return;
+            }
+            *s = after;
         }
         self.send(Command::Write(key, w));
     }
@@ -736,6 +747,28 @@ fn take_due(timers: &mut HashMap<DeviceKey, Instant>, now: Instant) -> Vec<Devic
     due
 }
 
+/// True when two settings agree on every value a `Write` can change.
+fn same_values(a: &AllDeviceSettings, b: &AllDeviceSettings) -> bool {
+    let dpi = |s: &AllDeviceSettings| s.dpi.as_ref().map(|d| d.current_dpi);
+    let scroll = |s: &AllDeviceSettings| s.scroll.as_ref().map(|x| (x.inverted, x.hires_enabled));
+    let shift = |s: &AllDeviceSettings| s.smart_shift.as_ref().map(|x| (x.wheel_mode, x.torque));
+    let host = |s: &AllDeviceSettings| {
+        s.hosts
+            .as_ref()
+            .and_then(|h| h.iter().find(|h| h.is_active).map(|h| h.slot))
+    };
+    let fn_swap = |s: &AllDeviceSettings| s.fn_settings.as_ref().map(|f| f.fn_swapped);
+    let platform = |s: &AllDeviceSettings| s.multiplatform.as_ref().map(|m| m.current);
+    let light = |s: &AllDeviceSettings| s.backlight.as_ref().map(|l| (l.mode, l.level));
+    dpi(a) == dpi(b)
+        && scroll(a) == scroll(b)
+        && shift(a) == shift(b)
+        && host(a) == host(b)
+        && fn_swap(a) == fn_swap(b)
+        && platform(a) == platform(b)
+        && light(a) == light(b)
+}
+
 /// Apply a successful write to the cached settings.
 fn patch(s: &mut AllDeviceSettings, w: Write) {
     match w {
@@ -792,4 +825,43 @@ fn hidpp_paths(api: &HidApi) -> Vec<String> {
     paths.sort();
     paths.dedup();
     paths
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use pulsaar_core::hidpp::hidpp20::DpiInfo;
+
+    fn with_dpi(current_dpi: u16) -> AllDeviceSettings {
+        AllDeviceSettings {
+            dpi: Some(DpiInfo {
+                dpi_list: vec![400, 1000, 1600],
+                current_dpi,
+                default_dpi: 1000,
+            }),
+            scroll: None,
+            smart_shift: None,
+            hosts: None,
+            fn_settings: None,
+            multiplatform: None,
+            backlight: None,
+            reprog_controls_idx: 0,
+            battery: None,
+        }
+    }
+
+    #[test]
+    fn a_write_of_the_current_value_changes_nothing() {
+        let before = with_dpi(1000);
+        let mut same = before.clone();
+        patch(&mut same, Write::Dpi(1000));
+        assert!(same_values(&before, &same));
+        let mut changed = before.clone();
+        patch(&mut changed, Write::Dpi(1600));
+        assert!(!same_values(&before, &changed));
+        // A write for a feature the device lacks patches nothing either.
+        let mut absent = before.clone();
+        patch(&mut absent, Write::FnSwap(true));
+        assert!(same_values(&before, &absent));
+    }
 }
