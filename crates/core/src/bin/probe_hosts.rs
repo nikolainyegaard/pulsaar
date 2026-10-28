@@ -54,9 +54,28 @@ fn main() {
             println!("  HOSTS_INFO fn0 (capabilities): {}", hex(cap.params()));
             let hosts = cap.params()[2];
             for host in 0..hosts {
-                if let Ok(m) = feature_call(t, *slot, hi, 1, &[host]) {
-                    println!("  HOSTS_INFO fn1 host {host}: {}", hex(m.params()));
+                let Ok(m) = feature_call(t, *slot, hi, 1, &[host]) else {
+                    continue;
+                };
+                // GetHostFriendlyName (fn 3): [host, offset] -> [host, offset, name chunk]
+                let len = m.params()[4] as usize;
+                let mut name = Vec::new();
+                while name.len() < len {
+                    let Ok(c) = feature_call(t, *slot, hi, 3, &[host, name.len() as u8]) else {
+                        break;
+                    };
+                    let chunk = &c.params()[2..];
+                    let take = chunk.len().min(len - name.len());
+                    if take == 0 {
+                        break;
+                    }
+                    name.extend_from_slice(&chunk[..take]);
                 }
+                println!(
+                    "  host {host}: {}  name {:?}",
+                    hex(&m.params()[..6]),
+                    String::from_utf8_lossy(&name)
+                );
             }
         }
     }

@@ -583,10 +583,10 @@ pub struct PairingSession {
 
 /// One step of passkey entry on the device being paired.
 ///
-/// ponytail: the 0x4E payload is undocumented (Solaar ignores it). This reads
-/// the address byte as a Bluetooth LE SMP keypress notification type, which
-/// Bolt's pairing resembles: 0 started, 1 entered, 2 erased, 3 cleared,
-/// 4 completed. The raw bytes are logged so one pairing confirms or corrects it.
+/// From Bolt's 0x4E notification, which Solaar ignores. The address byte is
+/// the Bluetooth LE SMP keypress type: 0 started, 1 entered, 2 erased,
+/// 3 cleared, 4 completed; the params carry the device's address. Confirmed
+/// 2026-10-28 pairing an MX Anywhere 3S: 00, ten times 01, then 04.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PasskeyEntry {
     Started,
