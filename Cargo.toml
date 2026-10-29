@@ -6,7 +6,7 @@ members = ["crates/core", "crates/native", "crates/ui", "apps/pulsaar"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/nikolainyegaard/pulsaar"
 
 [workspace.dependencies]

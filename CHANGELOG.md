@@ -26,6 +26,6 @@ a recreation in the spirit of Solaar.
 
 ### Changed
 
-- The project is licensed under GPL-2.0-or-later.
+- The project is licensed under GPL-3.0-or-later.
 
 [Unreleased]: https://github.com/nikolainyegaard/pulsaar/commits/HEAD
