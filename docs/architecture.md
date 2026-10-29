@@ -2,13 +2,13 @@
 
 Native desktop app for managing Logitech Unifying and Bolt receivers: pairing and unpairing, battery, device info, device settings. Spiritual successor to Solaar (Linux-only, GTK). Logitech Options+ requires an account and phones home; Pulsaar fills the gap without either. The name's double A nods to Solaar.
 
-Not a Solaar fork: a clean reimplementation using Solaar's source as protocol reference (snapshot in `reference/`, see [core.md](core.md)). No git relationship; new device support and protocol fixes are ported manually from Solaar changelogs a few times a year. Scope: a feature-complete Solaar port where the OS allows it. Remapping/diversion via evdev/uinput is Linux-kernel-only; document that limitation clearly, never silently drop it.
+A Rust recreation in the spirit of Solaar: no shared code and no git history (see [core.md](core.md) for the protocol sources). Solaar's changelog is checked a few times a year for new device behaviour worth supporting. Scope: the feature set Solaar offers, where the OS allows it. Remapping/diversion via evdev/uinput is Linux-kernel-only; document that limitation clearly, never silently drop it.
 
 One Rust binary with an egui window on Linux, macOS and Windows, laid out like OxTree (`~/Documents/GitHub/OxTree`), which is the reference for structure, lints, fonts, packaging and CI. Decided 2026-10-28, replacing the SwiftUI plus WinUI 3 plan: one UI instead of two mirrored ones, and Linux back in scope. The user is self-taught (Python/Docker background), building this with Claude.
 
 ## Platform direction
 
-Linux, macOS and Windows from one codebase. The rewrite lives on the `egui-rewrite` branch. `macos/` and `windows/` stay in the tree as the behaviour spec for the egui UI and are deleted at parity; they no longer build there, since `ffi.rs` is gone.
+Linux, macOS and Windows from one codebase. `macos/` and `windows/` stay in the tree as the behaviour spec for the egui UI and are deleted at parity; they no longer build, since the C ABI they used is gone.
 
 ## Tech stack
 
@@ -42,7 +42,6 @@ pulsaar/
 ├── apps/pulsaar/                the binary: window, fonts, icon; deb and rpm metadata
 ├── packaging/                   desktop entry, icons, AppStream metainfo, udev rule, Info.plist
 ├── macos/, windows/             previous native apps, kept as the spec until parity
-├── reference/                   Solaar source snapshot (protocol reference, never built)
 ├── .github/workflows/           ci.yml, release.yml
 └── docs/
 ```

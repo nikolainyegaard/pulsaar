@@ -112,6 +112,8 @@ pub enum DeviceEvent {
     /// feature_index is the sub_id of the message (= 0x1B04 feature index for
     /// button-CID events, or a settings feature index for mode changes).
     SettingsChanged { slot: u8, feature_index: u8 },
+    /// The device broadcast its battery state (0x1000 or 0x1004 event 0).
+    Battery { slot: u8, battery: Battery },
 }
 
 /// An opened receiver. Provides access to paired device info.
@@ -865,7 +867,7 @@ impl Receiver {
     /// Other HID++ 2.0 unsolicited notifications (key events, battery updates, etc.) are
     /// intentionally ignored here; they must not be treated as connection-state changes.
     ///
-    /// Protocol reference (matches Solaar's _process_hidpp10_notification):
+    /// Notification layout (HID++ 1.0; Solaar documents the same reading):
     ///   0x41 (DJ_PAIRING): params.at(0) & 0x40 == 0 => link established (online)
     ///   0x4B (POWER):      address == 0x01        => device powered on (online)
     pub fn poll_device_event(&self, timeout_ms: i32) -> Result<Option<DeviceEvent>> {
@@ -884,8 +886,8 @@ impl Receiver {
             return Ok(None);
         } // receiver-level, not a device
           // DJ mode (Linux kernel driver): 0x42 is the connection status, bit 0
-          // of the first byte set means the link is lost (Solaar's
-          // _process_dj_notification). Types below 0x10 are forwarded input.
+          // of the first byte set means the link is lost (as Solaar also
+          // reads it). Types below 0x10 are forwarded input.
         if msg.is_dj() {
             return Ok(
                 (sub_id == DJ_CONNECTION_STATUS).then(|| DeviceEvent::LinkChange {
@@ -921,6 +923,17 @@ impl Receiver {
                 // on a separate handle. A value of 0 here means the device sent this
                 // without prompting -- i.e. a state-change notification.)
                 if (msg.address() & 0x0F) == 0 {
+                    // Battery broadcasts carry the same payload as the read.
+                    if let Some(f) = self.features.borrow().get(&slot) {
+                        if f.get(&hidpp20::FEAT_UNIFIED_BATTERY) == Some(&sub_id) {
+                            let battery = hidpp20::battery_from_unified(msg.params());
+                            return Ok(Some(DeviceEvent::Battery { slot, battery }));
+                        }
+                        if f.get(&hidpp20::FEAT_BATTERY_STATUS) == Some(&sub_id) {
+                            let battery = hidpp20::battery_from_status(msg.params());
+                            return Ok(Some(DeviceEvent::Battery { slot, battery }));
+                        }
+                    }
                     Ok(Some(DeviceEvent::SettingsChanged {
                         slot,
                         feature_index: sub_id,
@@ -949,8 +962,8 @@ impl Receiver {
 /// Parse it as a u32, then read the 10 least-significant bits MSB-first:
 /// bit=1 -> 'R' (right button), bit=0 -> 'L' (left button).
 ///
-/// This matches Solaar's conversion: int(passkey_str) formatted as `{:010b}`,
-/// where '1'=right and '0'=left.
+/// Solaar documents the same reading: the passkey as a 10-bit number,
+/// '1'=right and '0'=left.
 fn passkey_to_buttons(passkey_str: &str) -> String {
     let n: u32 = passkey_str.trim_end_matches('\0').parse().unwrap_or(0);
     (0..10)

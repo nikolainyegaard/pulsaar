@@ -288,8 +288,40 @@ pub fn get_friendly_name(
     Ok(Some(String::from_utf8_lossy(&name_bytes).into_owned()))
 }
 
-/// Get battery status using FEAT_BATTERY_STATUS (0x1000).
-/// Function 0: GetBatteryLevelStatus -> [level_0-100, next_level, charging_status, ...].
+/// The payload of a BATTERY_STATUS (0x1000) reply or broadcast event:
+/// [level_0-100, next_level, charging_status, ...].
+pub fn battery_from_status(p: &[u8]) -> Battery {
+    Battery {
+        level: p.first().copied(),
+        status: p.get(2).map(|&b| BatteryStatus::from_byte(b)),
+        voltage: None,
+    }
+}
+
+/// The payload of a UNIFIED_BATTERY (0x1004) reply or broadcast event:
+/// [soc_0-100, level, charging_status, ...].
+/// level: 0=empty, 1=critical, 2=low, 4=good, 8=full (bitmask approximation).
+/// Prefers the SOC percentage; falls back to the level approximation when SOC is 0.
+pub fn battery_from_unified(p: &[u8]) -> Battery {
+    let level = if p.at(0) > 0 {
+        p.at(0) // SOC percentage
+    } else {
+        match p.at(1) {
+            8 => 90, // full
+            4 => 50, // good
+            2 => 20, // low
+            1 => 5,  // critical
+            _ => 0,  // empty
+        }
+    };
+    Battery {
+        level: Some(level),
+        status: p.get(2).map(|&b| BatteryStatus::from_byte(b)),
+        voltage: None,
+    }
+}
+
+/// Get battery status using FEAT_BATTERY_STATUS (0x1000), function 0.
 pub fn get_battery_status(
     transport: &Transport,
     device: u8,
@@ -299,23 +331,11 @@ pub fn get_battery_status(
         Some(&i) => i,
         None => return Ok(None),
     };
-
     let reply = feature_call(transport, device, idx, 0, &[])?;
-    let p = reply.params();
-    let level = p.first().copied();
-    let status = p.get(2).map(|&b| BatteryStatus::from_byte(b));
-
-    Ok(Some(Battery {
-        level,
-        status,
-        voltage: None,
-    }))
+    Ok(Some(battery_from_status(reply.params())))
 }
 
-/// Get battery status using FEAT_UNIFIED_BATTERY (0x1004).
-/// Function 1: GetStatus -> [soc_0-100, level, charging_status, ...].
-/// level: 0=empty, 1=critical, 2=low, 4=good, 8=full (bitmask approximation).
-/// Prefers the SOC percentage; falls back to the level approximation when SOC is 0.
+/// Get battery status using FEAT_UNIFIED_BATTERY (0x1004), function 1.
 pub fn get_unified_battery(
     transport: &Transport,
     device: u8,
@@ -325,33 +345,12 @@ pub fn get_unified_battery(
         Some(&i) => i,
         None => return Ok(None),
     };
-
     let reply = feature_call(transport, device, idx, 1, &[])?;
     let p = reply.params();
     if p.is_empty() {
         return Ok(None);
     }
-
-    let level = if p.at(0) > 0 {
-        Some(p.at(0)) // SOC percentage
-    } else {
-        // No SOC reported; derive approximate level from the level nibble.
-        Some(match p.get(1).copied().unwrap_or(0) {
-            8 => 90u8, // full
-            4 => 50u8, // good
-            2 => 20u8, // low
-            1 => 5u8,  // critical
-            _ => 0u8,  // empty
-        })
-    };
-
-    let status = p.get(2).map(|&b| BatteryStatus::from_byte(b));
-
-    Ok(Some(Battery {
-        level,
-        status,
-        voltage: None,
-    }))
+    Ok(Some(battery_from_unified(p)))
 }
 
 /// Get battery voltage using FEAT_BATTERY_VOLTAGE (0x1001).
@@ -1258,4 +1257,18 @@ pub fn clear_reprog_controls_diversions(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unified_battery_prefers_soc_and_falls_back_to_level() {
+        let b = battery_from_unified(&[73, 4, 1]);
+        assert_eq!(b.level, Some(73));
+        assert_eq!(b.status, Some(BatteryStatus::from_byte(1)));
+        assert_eq!(battery_from_unified(&[0, 2, 0]).level, Some(20));
+        assert_eq!(battery_from_status(&[]).level, None);
+    }
 }

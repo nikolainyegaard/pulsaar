@@ -43,8 +43,8 @@ fn main() {
     }
 }
 
-/// One bundled face for text plus egui's icon font; `system_fonts` covers
-/// the rest on demand. Same set as OxTree.
+/// One bundled face for text plus egui's icon font. No system-font fallback:
+/// device and host names are Latin, and loading fontconfig costs startup time.
 fn fonts() -> egui::FontDefinitions {
     use egui::{FontData, FontFamily, FontTweak};
     use std::sync::Arc;

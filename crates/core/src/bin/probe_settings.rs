@@ -362,7 +362,7 @@ fn main() {
             // -----------------------------------------------------------------------
 
             // FN swap write test.
-            // Solaar's K375sFnSwap prepends the current host index (from HOSTS_INFO fn 0 byte 3)
+            // On the K375s the write prepends the current host index (from HOSTS_INFO fn 0 byte 3)
             // before the fn_swap byte. p[0] of GetFnInversionState is the host echo; p[1] is the
             // actual fn_swap state. Writes must be [host_byte, fn_swap_byte].
             if let Some(&idx) = features.get(&hidpp20::FEAT_K375S_FN_INVERSION) {

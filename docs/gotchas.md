@@ -28,9 +28,9 @@ With the kernel's hid-logitech-dj driver bound (not the case on the author's Fed
 
 Reply bytes are read through `ReplyBytes::at` and `span` (crates/core/src/hidpp/message.rs): a missing byte reads as 0 and a missing range as the part that is there, so a short or malformed reply gives wrong-looking values instead of a panic. Until 2026-10-28 the parsers indexed directly in 60 places, the release profile unwound and the worker restarted itself; with `indexing_slicing` denied in the core again, the profile is back to `panic = "abort"` like OxTree.
 
-## Not a Solaar fork
+## Inspired by Solaar, no shared code
 
-No shared code and no git relationship with Solaar; the protocol was reimplemented in Rust using Solaar's source as reference. New device support and protocol fixes are ported manually from Solaar changelogs a few times a year, not merged.
+Pulsaar is a Rust recreation in the spirit of Solaar. It shares no code and no git history with it. Protocol knowledge comes from Logitech's HID++ documentation and from Solaar's documented findings; Solaar's changelog is checked a few times a year for new device behaviour worth supporting.
 
 ## Remapping is Linux-kernel-only
 

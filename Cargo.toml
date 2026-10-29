@@ -6,10 +6,11 @@ members = ["crates/core", "crates/native", "crates/ui", "apps/pulsaar"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.88"
+license = "GPL-2.0-or-later"
 repository = "https://github.com/nikolainyegaard/pulsaar"
 
 [workspace.dependencies]
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "system_fonts", "clipboard"] }
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "wayland", "x11", "clipboard"] }
 epaint_default_fonts = "0.37.0"
 pulsaar-core = { path = "crates/core" }
 pulsaar-native = { path = "crates/native" }

@@ -2,20 +2,13 @@
 
 Library implementing HID++ 1.0 and 2.0 over hidapi, used directly by the egui UI crate.
 
-## Solaar as protocol reference
+## Protocol sources
 
-`reference/` is Solaar's source; it has reverse-engineered this protocol over many years. When stuck on HID++ behavior (how to encode a write, what bytes mean, what function numbers to use), read it before probing blindly. Key files under `reference/lib/logitech_receiver/`:
-
-- `hidpp10.py`: HID++ 1.0
-- `hidpp20.py`: HID++ 2.0
-- `settings_templates.py`: per-feature read/write classes; check this first for any feature
-- `hidpp20_constants.py`: feature IDs and constants
-- `special_keys.py`: button/key mappings
-- `descriptors.py`: per-device quirks
+Logitech's HID++ 2.0 feature documents (published on Logitech's developer pages, and mirrored in several open repositories) define the feature IDs, function numbers and byte layouts. Solaar (https://github.com/pwr-Solaar/Solaar) documents device behaviour that the papers leave out: quirks, undocumented features and notification formats found over many years. When stuck on how a device behaves, check Solaar's issue tracker and docs before probing blindly. Pulsaar's own findings are recorded in this file and in [gotchas.md](gotchas.md).
 
 ## FFI (removed 2026-10-28)
 
-`ffi.rs` and the C ABI went with the egui rewrite; the last version is in git history on `master`. Two things it did that the UI's HID worker must now do itself:
+The core once had a C ABI (`ffi.rs`) for the SwiftUI and WinUI 3 apps; it went with the egui app. Two things it did that the UI's HID worker now does itself:
 
 - Batch settings read: `Receiver`'s all-settings call is the only settings read path, one `discover_features` for all 7 features. Before the batch call existed, prefetching ran discovery 7 times per device.
 - Streaming enumeration: loop `enumerate_slot` from slot 1, stop when found >= the paired count from `get_paired_device_count` or slot > max_devices, and publish each device as it arrives so the sidebar fills one row at a time.
@@ -35,6 +28,12 @@ Library implementing HID++ 1.0 and 2.0 over hidapi, used directly by the egui UI
 ## Event decoding
 
 `poll_device_event` returns `LinkChange` for 0x41/0x4B and `SettingsChanged{slot, feature_index}` for any other unsolicited HID++ 2.0 feature notification (address & 0x0F == 0; Pulsaar uses software_id=0x0A, so its own replies have & 0x0F == 0x0A). `CDeviceConnectionEvent.feature_index` lets a frontend compare against the 0x1B04 feature index and discard button-CID events; the macOS refresh path built on this is in [macos.md](macos.md).
+
+Battery broadcasts: 0x1000 and 0x1004 send event 0 with the same payload as
+their status reply when the level or charging state changes. `poll_device_event`
+matches the sub_id against the slot's cached feature table and returns
+`DeviceEvent::Battery` so the worker updates the model without a settings
+re-read.
 
 ## Feature quirks
 

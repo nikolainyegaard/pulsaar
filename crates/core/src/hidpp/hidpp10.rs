@@ -100,7 +100,7 @@ pub fn write_short(
 }
 
 /// Ask the receiver to send a 0x41 link notification for every paired device
-/// (Solaar's notify_devices). Does not wait for the write's reply: the
+/// (Solaar documents this as notify_devices). Does not wait for the write's reply: the
 /// notifications can arrive before it and `request` would drop them.
 pub fn trigger_link_notifications(transport: &Transport) -> Result<()> {
     let (sub_id, address) = write_ids(Register::ReceiverConnection as u16);

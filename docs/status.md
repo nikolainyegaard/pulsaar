@@ -4,10 +4,10 @@ Keep this file current: after every change, remove finished items and adjust the
 
 ## Not done
 
-egui rewrite (branch `egui-rewrite`):
+egui app:
 
-- Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the macOS UI ported (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). settings writes, pairing (mouse and keyboard, with live passkey progress) and unpairing tested by the user on Fedora
-- Pick a license; cargo-deb and cargo-generate-rpm need the `license` field before the first tag
+- Done 2026-10-28: workspace skeleton; HID worker (`crates/ui/src/store.rs`); the UI rebuilt in egui (sidebar tree, device, receiver and Bluetooth panes, settings, pairing and unpair dialogs, toasts, Ctrl+R). settings writes, pairing (mouse and keyboard, with live passkey progress) and unpairing tested by the user on Fedora
+- Done 2026-10-29: GPL-2.0-or-later (LICENSE, Cargo, metainfo); battery from 0x1000/0x1004 broadcasts; reload after resume (tick gap over 10 s); no system-font fallback; changelog for the first tag. Tag `v0.1.0` after the user's go-ahead
 - Core tests cover message parsing and the button passkey; the per-feature parsers need a fake transport before they can be tested
 - Delete `macos/` and `windows/` at parity
 

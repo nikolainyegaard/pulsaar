@@ -178,6 +178,9 @@ fn lock(m: &Mutex<Model>) -> MutexGuard<'_, Model> {
 /// How long a device-initiated event waits for more before it is acted on.
 const DEBOUNCE: Duration = Duration::from_millis(750);
 const PLUG_CHECK: Duration = Duration::from_secs(2);
+/// A pause between ticks this long means the machine was asleep: link
+/// notifications sent meanwhile are lost, so everything is read again.
+const RESUME_GAP: Duration = Duration::from_secs(10);
 const TOAST: Duration = Duration::from_secs(2);
 const PAIRING_TIMEOUT_SECS: u8 = 30;
 
@@ -199,6 +202,7 @@ struct Worker {
     /// Serials whose active host slot got this computer's name this run.
     named: HashSet<String>,
     next_plug_check: Instant,
+    last_tick: Instant,
 }
 
 impl Worker {
@@ -217,6 +221,7 @@ impl Worker {
             linked_at: HashMap::new(),
             named: HashSet::new(),
             next_plug_check: Instant::now() + PLUG_CHECK,
+            last_tick: Instant::now(),
         }
     }
 
@@ -263,6 +268,10 @@ impl Worker {
 
     fn tick(&mut self) {
         let now = Instant::now();
+        if now.duration_since(self.last_tick) > RESUME_GAP && self.session.is_none() {
+            self.reload_at = Some(now + DEBOUNCE);
+        }
+        self.last_tick = now;
         if self.session.is_some() {
             self.poll_pairing();
         } else {
@@ -270,6 +279,7 @@ impl Worker {
         }
         if self.reload_at.is_some_and(|t| t <= now) {
             self.reload();
+            self.last_tick = Instant::now();
             return;
         }
         for key in take_due(&mut self.linked_at, now) {
@@ -291,6 +301,7 @@ impl Worker {
         let mut reload = false;
         let mut links = Vec::new();
         let mut refresh = Vec::new();
+        let mut batteries = Vec::new();
         for (i, r) in self.receivers.iter().enumerate() {
             // Non-blocking reads; a burst longer than this waits for the next tick.
             for _ in 0..32 {
@@ -302,6 +313,9 @@ impl Worker {
                         slot,
                         feature_index,
                     })) => refresh.push((DeviceKey { receiver: i, slot }, feature_index)),
+                    Ok(Some(DeviceEvent::Battery { slot, battery })) => {
+                        batteries.push((DeviceKey { receiver: i, slot }, battery));
+                    }
                     Ok(None) => {}
                     // Unplugged, most likely; the reload finds out.
                     Err(_) => {
@@ -328,6 +342,13 @@ impl Worker {
         }
         if reload && self.reload_at.is_none() {
             self.reload_at = Some(now + DEBOUNCE);
+        }
+        for (key, battery) in batteries {
+            if lock(&self.model).device(key).is_some_and(|d| d.online) {
+                self.set_battery(key, battery);
+            } else {
+                self.linked_at.entry(key).or_insert(now + DEBOUNCE);
+            }
         }
         let model = lock(&self.model);
         for (key, feature_index) in refresh {
@@ -557,19 +578,29 @@ impl Worker {
             }
         }
         // The battery comes with the settings read; show it and remember it.
-        let device = lock(&self.model).device(key).cloned();
-        if let (Some(mut info), Some(battery)) = (device, settings.battery.clone()) {
-            info.battery = Some(battery);
-            self.apply_cache(&mut info);
-            self.update(|m| {
-                m.cached_battery.remove(&key);
-                if let Some(d) = device_mut(m, key) {
-                    d.battery = info.battery;
-                }
-            });
+        if let Some(battery) = settings.battery.clone() {
+            self.set_battery(key, battery);
         }
         self.update(|m| {
             m.settings.insert(key, settings);
+        });
+    }
+
+    /// Show a fresh battery reading and remember it for the next start.
+    fn set_battery(&mut self, key: DeviceKey, battery: Battery) {
+        let Some(mut info) = lock(&self.model).device(key).cloned() else {
+            return;
+        };
+        info.battery = Some(battery.clone());
+        self.apply_cache(&mut info);
+        self.update(|m| {
+            m.cached_battery.remove(&key);
+            if let Some(d) = device_mut(m, key) {
+                d.battery = Some(battery.clone());
+            }
+            if let Some(s) = m.settings.get_mut(&key) {
+                s.battery = Some(battery);
+            }
         });
     }
 

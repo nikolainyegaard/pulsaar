@@ -27,6 +27,6 @@ cargo build --release
 
 On Linux the user needs access to `/dev/hidraw*`. The .deb and .rpm install `packaging/42-pulsaar.rules` for that; otherwise copy it to `/etc/udev/rules.d/`.
 
-## Relationship to Solaar
+## Inspired by Solaar
 
-Pulsaar is not a fork of Solaar. It reimplements the HID++ protocol from scratch in Rust, using Solaar's source as a protocol reference. The `reference/` directory contains a snapshot of Solaar used during development.
+Pulsaar is a Rust recreation in the spirit of [Solaar](https://github.com/pwr-Solaar/Solaar), the Linux manager for Logitech receivers. It shares no code with Solaar. The HID++ protocol knowledge comes from Logitech's published HID++ documentation and from Solaar's years of documented findings about device behaviour. The name's double A is a nod to it.
