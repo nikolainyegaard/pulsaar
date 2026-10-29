@@ -2,7 +2,7 @@
 
 All notable changes to Pulsaar will be documented here.
 
-## [Unreleased]
+## [0.1.0] - 2026-10-29
 
 First release: one Rust and egui binary for Linux, macOS and Windows,
 a recreation in the spirit of Solaar.
