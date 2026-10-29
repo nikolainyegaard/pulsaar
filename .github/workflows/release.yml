@@ -3,8 +3,8 @@ name: release
 # On a version tag: build Linux for x86_64 and aarch64 against glibc 2.28,
 # so the binaries run on RHEL 8, Debian 10, Ubuntu 18.10 and anything
 # newer; pack each as a tarball, a .deb, an .rpm and an AppImage. Build a
-# universal macOS app bundle and a Windows zip. Attach them all to a GitHub
-# release with the changelog section as its notes.
+# universal macOS app bundle, a bare Windows exe and an msi installer.
+# Attach them all to a GitHub release with the changelog section as its notes.
 
 on:
   push:
@@ -109,13 +109,14 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release
-      - name: Zip
+      - run: cargo install cargo-wix --locked
+      - name: Exe and msi
         shell: pwsh
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart("v")
-          New-Item -ItemType Directory dist, stage | Out-Null
-          Copy-Item target/release/pulsaar.exe, README.md, CHANGELOG.md stage/
-          Compress-Archive -Path stage/* -DestinationPath "dist/Pulsaar-$version-windows-x86_64.zip"
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/pulsaar.exe "dist/Pulsaar-$version-windows-x86_64.exe"
+          cargo wix -p pulsaar --no-build --nocapture -o "dist/Pulsaar-$version-windows-x86_64.msi"
       - name: Software OpenGL zip
         shell: pwsh
         env:

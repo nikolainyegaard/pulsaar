@@ -49,3 +49,7 @@ assets = [
 
 [package.metadata.generate-rpm.requires]
 glibc = ">= 2.28"
+
+# cargo wix: no EULA dialog, the license ships in the repo.
+[package.metadata.wix]
+eula = false
