@@ -122,9 +122,8 @@ pub fn discover_features(
         .map(|(&id, &idx)| format!("0x{:04X}@{}", id, idx))
         .collect();
     feat_list.sort();
-    eprintln!(
-        "[PULSAAR][HIDPP20] T+{}ms dev=0x{:02X} discover_features: {} feature(s): {}",
-        crate::t_ms(),
+    crate::log!(
+        "[PULSAAR][HIDPP20] dev=0x{:02X} discover_features: {} feature(s): {}",
         device,
         map.len(),
         feat_list.join(", ")
@@ -148,7 +147,7 @@ pub fn feature_call(
         .map(|b| format!("{:02X}", b))
         .collect::<Vec<_>>()
         .join(" ");
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] dev=0x{:02X} feat=0x{:02X} fn={} params=[{}]",
         device,
         feature_index,
@@ -186,7 +185,7 @@ pub fn feature_call(
                 .map(|b| format!("{:02X}", b))
                 .collect::<Vec<_>>()
                 .join(" ");
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20]   -> ok  [{}]",
                 if reply_hex.is_empty() {
                     "(none)".to_owned()
@@ -195,7 +194,7 @@ pub fn feature_call(
                 }
             );
         }
-        Err(e) => eprintln!("[PULSAAR][HIDPP20]   -> err {:?}", e),
+        Err(e) => crate::log!("[PULSAAR][HIDPP20]   -> err {:?}", e),
     }
     reply
 }
@@ -489,16 +488,17 @@ pub fn set_dpi(
     let idx = match features.get(&FEAT_ADJUSTABLE_DPI) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_dpi dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_dpi dev=0x{:02X} dpi={}",
-        device, dpi
+        device,
+        dpi
     );
     feature_call(
         transport,
@@ -559,16 +559,18 @@ pub fn set_scroll_settings(
     let idx = match features.get(&FEAT_HIRES_WHEEL) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_scroll_settings dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_scroll_settings dev=0x{:02X} inverted={} hires={}",
-        device, inverted, hires_enabled
+        device,
+        inverted,
+        hires_enabled
     );
     let mode_byte = (if inverted { 0x04u8 } else { 0 }) | (if hires_enabled { 0x02 } else { 0 });
     feature_call(transport, device, idx, 2, &[mode_byte])?;
@@ -632,16 +634,18 @@ pub fn set_smart_shift(
     let idx = match features.get(&FEAT_SMART_SHIFT_ENHANCED) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_smart_shift dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_smart_shift dev=0x{:02X} wheel_mode={} torque={}",
-        device, wheel_mode, torque
+        device,
+        wheel_mode,
+        torque
     );
     let current = feature_call(transport, device, idx, 1, &[])?;
     let auto_disengage = current.params().get(1).copied().unwrap_or(0);
@@ -765,14 +769,14 @@ pub fn set_active_host(
     let idx = match features.get(&FEAT_CHANGE_HOST) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_active_host dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!("[PULSAAR][HIDPP20] set_active_host dev=0x{:02X} host_slot={} (device disconnects immediately)", device, host_slot);
+    crate::log!("[PULSAAR][HIDPP20] set_active_host dev=0x{:02X} host_slot={} (device disconnects immediately)", device, host_slot);
     let _ = feature_call(transport, device, idx, 1, &[host_slot]);
     Ok(())
 }
@@ -792,7 +796,7 @@ pub fn set_host_name(
     let hi_idx = match features.get(&FEAT_HOSTS_INFO) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_host_name dev=0x{:02X}: feature absent, skipping",
                 device
             );
@@ -803,7 +807,7 @@ pub fn set_host_name(
     // GetHostsInfo (fn 0): check cap_flags bit 1 (can write)
     let caps = feature_call(transport, device, hi_idx, 0, &[])?;
     if (caps.params().first().copied().unwrap_or(0) & 0x02) == 0 {
-        eprintln!(
+        crate::log!(
             "[PULSAAR][HIDPP20] set_host_name dev=0x{:02X}: device does not support name writes",
             device
         );
@@ -817,9 +821,13 @@ pub fn set_host_name(
     let name_bytes = name.as_bytes();
     let write_len = name_bytes.len().min(max_name_len);
 
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_host_name dev=0x{:02X} host_slot={} name={:?} ({} bytes, max={})",
-        device, host_slot, name, write_len, max_name_len
+        device,
+        host_slot,
+        name,
+        write_len,
+        max_name_len
     );
 
     // SetHostName (fn 4): params=[host_slot, offset, name_bytes (up to 14 per call)]
@@ -910,25 +918,28 @@ pub fn set_fn_swap(
     let (idx, feat_id) = match find_fn_feature(features) {
         Some(pair) => pair,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_fn_swap dev=0x{:02X}: no FN feature, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_fn_swap dev=0x{:02X} swapped={} feat=0x{:04X}",
-        device, swapped, feat_id
+        device,
+        swapped,
+        feat_id
     );
     let swap_byte: u8 = if swapped { 0x01 } else { 0x00 };
     if feat_id == FEAT_K375S_FN_INVERSION {
         // Read current state to obtain the host prefix byte (p.at(0) of fn 0).
         let state = feature_call(transport, device, idx, 0, &[])?;
         let host = state.params().first().copied().unwrap_or(0x00);
-        eprintln!(
+        crate::log!(
             "[PULSAAR][HIDPP20]   K375S: host_byte=0x{:02X} swap_byte=0x{:02X}",
-            host, swap_byte
+            host,
+            swap_byte
         );
         feature_call(transport, device, idx, 1, &[host, swap_byte])?;
     } else {
@@ -1044,16 +1055,17 @@ pub fn set_multiplatform(
     let idx = match features.get(&FEAT_MULTIPLATFORM) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_multiplatform dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_multiplatform dev=0x{:02X} platform_index={}",
-        device, platform_index
+        device,
+        platform_index
     );
     feature_call(transport, device, idx, 3, &[0xFF, platform_index])?;
     Ok(())
@@ -1129,16 +1141,18 @@ pub fn set_backlight(
     let idx = match features.get(&FEAT_BACKLIGHT2) {
         Some(&i) => i,
         None => {
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20] set_backlight dev=0x{:02X}: feature absent, skipping",
                 device
             );
             return Ok(());
         }
     };
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] set_backlight dev=0x{:02X} mode={} level={}",
-        device, mode, level
+        device,
+        mode,
+        level
     );
 
     // Read current state to preserve options base bits and timing fields.
@@ -1210,9 +1224,10 @@ pub fn clear_reprog_controls_diversions(
 
     let count_reply = feature_call(transport, device, idx, 0, &[])?;
     let count = count_reply.params().first().copied().unwrap_or(0);
-    eprintln!(
+    crate::log!(
         "[PULSAAR][HIDPP20] dev=0x{:02X} clear_reprog_controls_diversions: {} control(s)",
-        device, count
+        device,
+        count
     );
 
     for i in 0..count {
@@ -1249,7 +1264,7 @@ pub fn clear_reprog_controls_diversions(
                     0x00, // no remap change
                 ],
             );
-            eprintln!(
+            crate::log!(
                 "[PULSAAR][HIDPP20]   cleared diversion for CID 0x{:04X}",
                 cid
             );

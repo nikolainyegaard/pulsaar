@@ -15,6 +15,11 @@ pulsaar-core.workspace = true
 pulsaar-native.workspace = true
 pulsaar-ui.workspace = true
 
+# System-font fallback for device names with CJK or symbol glyphs. Not on
+# Linux, where loading fontconfig costs startup time.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+eframe = { workspace = true, features = ["system_fonts"] }
+
 [lints]
 workspace = true
 

@@ -54,11 +54,16 @@ impl Transport {
         if n == 0 {
             return Ok(None);
         }
+        crate::log!("[HID] <- {:02X?}", buf.span(0, n));
         Ok(Message::from_bytes(buf.span(0, n)))
     }
 
     pub fn write(&self, msg: &Message) -> Result<()> {
-        self.write_dev.write(msg.as_bytes())?;
+        crate::log!("[HID] -> {:02X?}", msg.as_bytes());
+        if let Err(e) = self.write_dev.write(msg.as_bytes()) {
+            crate::log!("[HID] write failed: {e}");
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -119,6 +124,10 @@ impl Transport {
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
+                crate::log!(
+                    "[HID] no reply to {:02X?} within {timeout:?}",
+                    req.as_bytes()
+                );
                 return Err(Error::Timeout);
             }
 

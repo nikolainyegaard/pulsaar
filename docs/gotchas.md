@@ -47,3 +47,9 @@ Every `set*`/`Set*()` method patches the settings cache on the main thread immed
 ## Frontends mirror each other
 
 `NativeInterop.cs`, `Models.cs`, `ReceiverStore.cs`, and `DeviceCache.cs` mirror the corresponding Swift files; the DeviceCache JSON schema is identical across platforms. macOS is the reference implementation. A behavior fix on one platform usually belongs on both; the known deliberate divergence is the refresh path (macOS must stop event listeners around HID reads, Windows must not; see the platform docs).
+
+## HID log
+
+Set `PULSAAR_LOG` to a file path and every HID write, read and timeout is
+appended there with a millisecond timestamp. Without it the same lines go to
+stderr, which the Windows build has no console for.
